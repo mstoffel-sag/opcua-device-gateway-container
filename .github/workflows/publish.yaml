@@ -42,7 +42,7 @@ jobs:
           images: |
             name=ghcr.io/thin-edge/opcua-device-gateway,enable=true
           tags: |
-            type=semver,pattern={{version}}
+            type=raw,value={{tag}}
             type=raw,value=latest
 
       - name: Build and push

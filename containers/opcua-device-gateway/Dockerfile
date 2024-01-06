@@ -9,7 +9,7 @@ LABEL org.opencontainers.image.created=$BUILDTIME
 LABEL org.opencontainers.image.version=$VERSION
 LABEL org.opencontainers.image.revision=$REVISION
 LABEL org.opencontainers.image.description="OPCUA Device Gateway to support connecting thin-edge.io to OPCUA Servers"
-LABEL org.opencontainers.image.source="https://github.com/thin-edge/thin-edge.io"
+LABEL org.opencontainers.image.source="https://github.com/thin-edge/opcua-device-gateway-container"
 LABEL org.opencontainers.image.authors="thin-edge.io"
 LABEL org.opencontainers.image.vendor="thin-edge.io"
 LABEL org.opencontainers.image.licenses="Apache 2.0"
@@ -22,7 +22,7 @@ RUN apk update \
     && apk add --no-cache bash \
     && apk add --no-cache --virtual=build-dependencies unzip \
     && apk add --no-cache curl \
-    && apk add --no-cache  openjdk11
+    && apk add --no-cache openjdk11
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
