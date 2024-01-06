@@ -33,7 +33,7 @@ WORKDIR /app
 # Download gateway from https://resources.cumulocity.com/examples/opc-ua/
 #RUN wget -O opcua-device-gateway.jar https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-1017.0.289.jar
 # TODO: Confirm which version should be used because the avoe does not support thin-edge.io, and the jar shouldn't be hosted in the git repo
-COPY opcua-device-gateway-${VERSION}.jar .
+COPY opcua-device-gateway-${VERSION}.jar opcua-device-gateway.jar
 
 COPY application-tenant.yaml .
 COPY logging.xml .
