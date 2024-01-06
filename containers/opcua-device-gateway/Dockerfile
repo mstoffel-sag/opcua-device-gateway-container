@@ -39,4 +39,9 @@ COPY application-tenant.yaml .
 COPY logging.xml .
 COPY entrypoint.sh .
 
+# Default settings
+ENV OPCUA_GATEWAY_IDENTIFIER=OPCUAGateway001
+ENV OPCUA_GATEWAY_NAME=OPCUA_GATEWAY_AGENT
+ENV MQTT_BROKER=mqtt-broker:1883
+
 CMD ["/app/entrypoint.sh"]
