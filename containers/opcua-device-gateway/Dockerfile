@@ -22,7 +22,7 @@ RUN apk update \
     && apk add --no-cache bash \
     && apk add --no-cache --virtual=build-dependencies unzip \
     && apk add --no-cache curl \
-    && apk add --no-cache  openjdk11
+    && apk add --no-cache openjdk11
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
