@@ -2,7 +2,7 @@ FROM alpine:3.18
 
 ARG BUILDTIME
 ARG REVISION
-ARG VERSION=1018.0.281
+ARG VERSION=1018.0.308
 
 LABEL org.opencontainers.image.title="thin-edge.io"
 LABEL org.opencontainers.image.created=$BUILDTIME
@@ -31,9 +31,7 @@ RUN wget -O - thin-edge.io/install.sh | sh -s
 WORKDIR /app
 
 # Download gateway from https://resources.cumulocity.com/examples/opc-ua/
-#RUN wget -O opcua-device-gateway.jar https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-1017.0.289.jar
-# TODO: Confirm which version should be used because the avoe does not support thin-edge.io, and the jar shouldn't be hosted in the git repo
-COPY opcua-device-gateway-${VERSION}.jar opcua-device-gateway.jar
+RUN wget -O opcua-device-gateway.jar https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-${VERSION}.jar
 
 COPY application-tenant.yaml .
 COPY logging.xml .
