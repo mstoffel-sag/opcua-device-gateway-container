@@ -1,4 +1,4 @@
-FROM alpine:3.18
+FROM debian:11-slim
 
 ARG BUILDTIME
 ARG REVISION
@@ -15,14 +15,15 @@ LABEL org.opencontainers.image.vendor="thin-edge.io"
 LABEL org.opencontainers.image.licenses="Apache 2.0"
 LABEL org.opencontainers.image.url="https://thin-edge.io"
 LABEL org.opencontainers.image.documentation="https://thin-edge.github.io/thin-edge.io/"
-LABEL org.opencontainers.image.base.name="alpine:3.18"
+LABEL org.opencontainers.image.base.name="debian:11-slim"
 
-RUN apk update \
-    && apk upgrade \
-    && apk add --no-cache bash \
-    && apk add --no-cache --virtual=build-dependencies unzip \
-    && apk add --no-cache curl \
-    && apk add --no-cache openjdk11
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        openjdk-11-jre \
+        wget \
+        bash \
+        unzip \
+        curl
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
