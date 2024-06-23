@@ -32,7 +32,12 @@ RUN wget -O - thin-edge.io/install.sh | sh -s
 WORKDIR /app
 
 # Download gateway from https://resources.cumulocity.com/examples/opc-ua/
-RUN wget -O opcua-device-gateway.jar https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-${VERSION}.jar
+# From opcua version 1020.x.y, the download link changed, so handle both new and old download urls
+RUN case "${VERSION}" in \
+        10[0-1][0-9]*)  DOWNLOAD_URL="https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-${VERSION}.jar"  ;; \
+        *)  DOWNLOAD_URL="https://resources.cumulocity.com/examples/opc-ua/${VERSION}/opcua-device-gateway.jar"  ;; \
+    esac \
+    && wget -O opcua-device-gateway.jar "$DOWNLOAD_URL"
 
 COPY application-tenant.yaml .
 COPY logging.xml .

@@ -13,3 +13,7 @@ release:
     @echo
     @echo "Created release (tag): {{VERSION}}"
     @echo
+
+# Build the docker image
+build opcua_version *args:
+    docker build -t opcua-device-gateway-image:{{VERSION}} --build-arg VERSION={{opcua_version}} -f containers/opcua-device-gateway/Dockerfile containers/opcua-device-gateway {{args}}
