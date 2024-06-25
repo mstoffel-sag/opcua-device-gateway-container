@@ -50,7 +50,7 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
-      - uses: extractions/setup-just@v1
+      - uses: extractions/setup-just@v2
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
