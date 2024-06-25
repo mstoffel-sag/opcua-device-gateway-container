@@ -1,6 +1,7 @@
 name: publish
 
 on:
+  pull_request:
   push:
     tags:
       - "*"
@@ -17,6 +18,7 @@ jobs:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         target:
           - opcua_version: "1020.62.0"
@@ -61,7 +63,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            name=ghcr.io/thin-edge/${{ matrix.target.name }},enable=true
+            name=ghcr.io/thin-edge/${{ matrix.target.image }},enable=true
           tags: |
             type=raw,value={{tag}}
             type=raw,value=latest
