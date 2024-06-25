@@ -9,13 +9,34 @@ jobs:
   # Wait until all other publishing jobs are finished
   # before publishing the virtual packages (which are architecture agnostic)
   publish-containers:
-    name: Publish Containers
+    name: Publish Containers ${{ matrix.target.opcua_version }}
     runs-on: ubuntu-20.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        target:
+          - opcua_version: "1020.62.0"
+            image: opcua-device-gateway-1020
+
+          - opcua_version: "1018.0.308"
+            image: opcua-device-gateway-1018
+        
+          - opcua_version: "1017.0.289"
+            image: opcua-device-gateway-1017
+          
+          - opcua_version: "1016.0.327"
+            image: opcua-device-gateway-1016
+
+          - opcua_version: "1015.0.455"
+            image: opcua-device-gateway-1015
+
+          - opcua_version: "1014.0.413"
+            image: opcua-device-gateway-1014
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,7 +61,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            name=ghcr.io/thin-edge/opcua-device-gateway,enable=true
+            name=ghcr.io/thin-edge/${{ matrix.target.name }},enable=true
           tags: |
             type=raw,value={{tag}}
             type=raw,value=latest
@@ -56,3 +77,4 @@ jobs:
           build-args: |
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+            VERSION=${{ matrix.target.opcua_version }}
