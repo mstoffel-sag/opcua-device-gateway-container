@@ -10,7 +10,7 @@ jobs:
   # Wait until all other publishing jobs are finished
   # before publishing the virtual packages (which are architecture agnostic)
   publish-containers:
-    name: Publish Containers ${{ matrix.target.opcua_version }}
+    name: Publish ${{ matrix.target.image }} (${{ matrix.target.opcua_version }})
     runs-on: ubuntu-20.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
