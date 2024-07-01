@@ -34,4 +34,5 @@ echo "Settings"
 echo "  OPCUA_GATEWAY_IDENTIFIER: $OPCUA_GATEWAY_IDENTIFIER" >&2
 echo "  OPCUA_GATEWAY_NAME: $OPCUA_GATEWAY_NAME" >&2
 echo "Starting the opcua-device-gateway..."
-exec /usr/bin/java -Dlogging.config=file:./logging.xml -Dspring.profiles.active=default,tenant -jar opcua-device-gateway.jar -Dspring.config.location=file:./application-tenant.yaml "$@"
+# shellcheck disable=SC2086
+exec /usr/bin/java $JAVA_OPTS -Dlogging.config=file:./logging.xml -Dspring.profiles.active=default,tenant -jar opcua-device-gateway.jar -Dspring.config.location=file:./application-tenant.yaml "$@"

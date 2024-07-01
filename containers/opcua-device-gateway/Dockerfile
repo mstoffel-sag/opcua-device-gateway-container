@@ -48,5 +48,6 @@ COPY entrypoint.sh .
 ENV OPCUA_GATEWAY_IDENTIFIER=OPCUAGateway
 ENV OPCUA_GATEWAY_NAME=OPCUAGateway
 ENV MQTT_BROKER=mqtt-broker:1883
+ENV JAVA_OPTS=
 
 CMD ["/app/entrypoint.sh"]
