@@ -10,7 +10,7 @@ jobs:
   # before publishing the virtual packages (which are architecture agnostic)
   publish-containers:
     name: ${{ matrix.target.image }} (${{ matrix.target.opcua_version }})
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
