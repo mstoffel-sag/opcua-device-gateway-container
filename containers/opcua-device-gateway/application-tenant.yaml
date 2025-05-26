@@ -6,6 +6,6 @@ gateway:
     db:
         baseDir: ./data
     thinEdge:
-      enabled: true
+      enabled: false
       mqttServerURL: tcp://${MQTT_BROKER}
       deviceId: ${DEVICE_ID}
