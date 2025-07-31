@@ -11,7 +11,7 @@ This example shows a docker compose to be used in the tedge-demo-container (podm
 services:
   gateway:
     # Image is maintained under: https://github.com/thin-edge/opcua-device-gateway-container
-    image: ghcr.io/mstoffel-sag/opcua-device-gateway:latest
+    image: ghcr.io/thin-edge/opcua-device-gateway:latest
     container_name: opc-device-gateway
     restart: always
     environment:
@@ -46,7 +46,7 @@ Example to run the gateway standalone
 services:
   gateway:
     # Image is maintained under: https://github.com/thin-edge/opcua-device-gateway-container
-    image: ghcr.io/mstoffel-sag/opcua-device-gateway:latest
+    image: ghcr.io/thin-edge/opcua-device-gateway:latest
     container_name: opc-device-gateway-standalone
     restart: always
     environment:
@@ -58,12 +58,12 @@ services:
 
 
     volumes:
-      - opcua_data1:/app/data
+      - opcua_data:/app/data
     networks:
       - backend
 
 volumes:
-  opcua_data1:
+  opcua_data:
 networks:
   backend:
     name: backend
