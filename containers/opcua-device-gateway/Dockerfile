@@ -2,7 +2,7 @@ FROM debian:11-slim
 
 ARG BUILDTIME
 ARG REVISION
-ARG VERSION=1018.0.308
+ARG VERSION=1021.9.0
 
 LABEL org.opencontainers.image.title="thin-edge.io"
 LABEL org.opencontainers.image.created=$BUILDTIME
@@ -40,14 +40,12 @@ RUN case "${VERSION}" in \
     esac \
     && wget -O opcua-device-gateway.jar "$DOWNLOAD_URL"
 
-COPY application-tenant.yaml .
 COPY logging.xml .
 COPY entrypoint.sh .
 
 # Default settings
 ENV OPCUA_GATEWAY_IDENTIFIER=OPCUAGateway
 ENV OPCUA_GATEWAY_NAME=OPCUAGateway
-ENV MQTT_BROKER=mqtt-broker:1883
 ENV JAVA_OPTS=
 
 CMD ["/app/entrypoint.sh"]
