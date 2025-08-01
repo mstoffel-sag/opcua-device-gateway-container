@@ -40,7 +40,6 @@ RUN case "${VERSION}" in \
     esac \
     && wget -O opcua-device-gateway.jar "$DOWNLOAD_URL"
 
-
 COPY logging.xml .
 COPY entrypoint.sh .
 

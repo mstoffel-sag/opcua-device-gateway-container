@@ -47,7 +47,6 @@ jobs:
 
           - opcua_version: "1014.0.413"
             image: opcua-device-gateway-1014
-          
 
     steps:
       - name: Checkout

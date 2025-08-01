@@ -5,7 +5,7 @@
 This repository provides a containerized version of the Cumulocity IoT opcua-device-gateway Java based client customized to work with thin-edge.io out of the box.
 To configure the opcua-device gateway inside the container you can use environment variables.
 
-This example shows a docker compose to be used in the tedge-demo-container (podman hence tcp://host.containers.internal). The device will be attached as a child device to thinEdge device. To prevent from id clashes the external id of the gateway will be combination of THINEDGE_DEVICEID:GATEWAY_IDENTIFIER
+This example shows a docker compose to be used in the tedge-demo-container (podman hence `tcp://host.containers.internal`). The device will be attached as a child device to thinEdge device. To prevent from id clashes the external id of the gateway will be combination of THINEDGE_DEVICEID:GATEWAY_IDENTIFIER
 
 ```yaml
 services:
@@ -23,8 +23,6 @@ services:
       - GATEWAY_THINEDGE_ENABLED=true
       - GATEWAY_MAPPINGS_MERGECYCLICREAD=true
       - GATEWAY_MONITORING_INTERVAL=3600000
-
-
     volumes:
       - opcua_data:/app/data
       # Provide access to thin-edge.io configuration
@@ -51,12 +49,10 @@ services:
     restart: always
     environment:
     # Use configuration from https://cumulocity.com/docs/device-integration/opcua/#gateway-configuration-and-registration
-      - C8Y_BASEURL=https://mstoffel.eu-latest.cumulocity.com
+      - C8Y_BASEURL=https://example.eu-latest.cumulocity.com
       - GATEWAY_IDENTIFIER=OPCUAGateway-standalone
       - GATEWAY_NAME=OPCUAGateway-standalone
       - GATEWAY_MONITORING_INTERVAL=3600000
-
-
     volumes:
       - opcua_data:/app/data
     networks:
@@ -78,13 +74,9 @@ gateway:
 
 To
 
-```
+```sh
 GATEWAY_IDENTIFIER=OPCUAGateway
 ```
-
-
-
-
 
 ## Project tasks
 
