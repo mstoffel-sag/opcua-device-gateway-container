@@ -21,6 +21,7 @@ LABEL com.cumulocity.image.opcua.version="$VERSION"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         gpg \
+        ca-certificates \
         openjdk-11-jre \
         wget \
         bash \
