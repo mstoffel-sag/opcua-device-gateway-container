@@ -28,7 +28,7 @@ RUN apt-get update \
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
-RUN wget -O - thin-edge.io/install.sh | sh -s
+RUN wget -O - https://thin-edge.io/install.sh | sh -s
 
 WORKDIR /app
 
