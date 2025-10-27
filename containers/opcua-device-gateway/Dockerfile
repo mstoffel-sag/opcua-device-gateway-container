@@ -20,6 +20,7 @@ LABEL com.cumulocity.image.opcua.version="$VERSION"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        gpg \
         openjdk-11-jre \
         wget \
         bash \
@@ -28,7 +29,7 @@ RUN apt-get update \
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
-RUN wget -O - https://thin-edge.io/install.sh | sh -s
+RUN wget -O - thin-edge.io/install.sh | sh -s
 
 WORKDIR /app
 
