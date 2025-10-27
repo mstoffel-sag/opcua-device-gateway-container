@@ -20,6 +20,8 @@ LABEL com.cumulocity.image.opcua.version="$VERSION"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        gpg \
+        ca-certificates \
         openjdk-11-jre \
         wget \
         bash \
@@ -34,10 +36,7 @@ WORKDIR /app
 
 # Download gateway from https://resources.cumulocity.com/examples/opc-ua/
 # From opcua version 1020.x.y, the download link changed, so handle both new and old download urls
-RUN case "${VERSION}" in \
-        10[0-1][0-9]*)  DOWNLOAD_URL="https://resources.cumulocity.com/examples/opc-ua/opcua-device-gateway-${VERSION}.jar"  ;; \
-        *)  DOWNLOAD_URL="https://resources.cumulocity.com/examples/opc-ua/${VERSION}/opcua-device-gateway.jar"  ;; \
-    esac \
+RUN DOWNLOAD_URL="https://resources.cumulocity.com/examples/opc-ua/${VERSION}/opcua-device-gateway.jar" \
     && wget -O opcua-device-gateway.jar "$DOWNLOAD_URL"
 
 COPY logging.xml .
