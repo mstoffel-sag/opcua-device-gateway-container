@@ -1,8 +1,8 @@
-FROM debian:11-slim
+FROM debian:12-slim
 
 ARG BUILDTIME
 ARG REVISION
-ARG VERSION=1021.9.0
+ARG VERSION=1023.1.0
 
 LABEL org.opencontainers.image.title="thin-edge.io"
 LABEL org.opencontainers.image.created=$BUILDTIME
@@ -22,7 +22,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         gpg \
         ca-certificates \
-        openjdk-11-jre \
+        openjdk-17-jre \
         wget \
         bash \
         unzip \
