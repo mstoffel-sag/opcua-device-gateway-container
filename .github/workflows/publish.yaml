@@ -27,19 +27,9 @@ jobs:
 
           - opcua_version: "1023.1.0"
             image: opcua-device-gateway
-            
+
           - opcua_version: "1023.1.0"
             image: opcua-device-gateway-1023
-
-          - opcua_version: "1021.9.7"
-            image: opcua-device-gateway-1021
-
-          - opcua_version: "1020.91.0"
-            image: opcua-device-gateway-1020
-
-          - opcua_version: "1018.531.0"
-            image: opcua-device-gateway-1018
-
 
     steps:
       - name: Checkout
