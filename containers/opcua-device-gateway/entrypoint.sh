@@ -1,22 +1,20 @@
 #!/bin/sh
 set -e
 
-# Try loading any values, which aren't already set, using tedge cli
+# Try loading any values, which aren't already set
 if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
-    echo "ThinEdge mode enabled, trying to load values from tedge..." >&2
-    if command -V tedge >/dev/null 2>&1; then
-        if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-            echo "Fetching GATEWAY_THINEDGE_DEVICEID using tedge command tedge config get device.id" >&2
-            GATEWAY_THINEDGE_DEVICEID="$(tedge config get device.id 2>/dev/null ||:)"
-            echo "Using value from tedge: GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID" >&2
-            export GATEWAY_THINEDGE_DEVICEID
+    echo "ThinEdge mode enabled, trying to get device_id from c8y over proxy..." >&2
+
+        if [ -z "$C8Y_BASEURL" ]; then
+            echo "No C8Y_BASEURL set, setting to localhost thinEdge Proxy" >&2
+            export C8Y_BASEURL=http://127.0.0.1:8001/c8y
         fi
 
-        if [ -z "$C8Y_BASEURL" ] || [ "$C8Y_BASEURL" = "https://" ] || [ "$C8Y_BASEURL" = "http://" ]; then
-            echo "Fetching C8Y_BASEURL using tedge command tedge config get c8y.url" >&2
-            C8Y_BASEURL="https://$(tedge config get c8y.url 2>/dev/null ||:)"
-            echo "Using value from tedge: C8Y_BASEURL=$C8Y_BASEURL" >&2
-            export C8Y_BASEURL
+        if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
+            echo "Fetching GATEWAY_THINEDGE_DEVICEID using device user for cumulocity to get device.id http://127.0.0.1:8001/c8y/user/currentUser" >&2
+            GATEWAY_THINEDGE_DEVICEID="$(curl $C8Y_BASEURL/user/currentUser | jq -r '.id' | cut -d'_' -f2)"
+            echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID" >&2
+            export GATEWAY_THINEDGE_DEVICEID
         fi
 
         # Add a prefix to the OPCUA identifier to ensure its external identity is unique
@@ -30,7 +28,7 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
                 export GATEWAY_IDENTIFIER="${GATEWAY_THINEDGE_DEVICEID}:${GATEWAY_IDENTIFIER}"
                 ;;
         esac
-    fi
+    
 fi
 
 cd /app
