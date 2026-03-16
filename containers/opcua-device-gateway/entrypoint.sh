@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-DEVICE_ID_CACHE_FILE="/data/gateway_device_id.cache"
+DEVICE_ID_CACHE_FILE="/app/gateway_device_id.cache"
 
 # Try loading any values, which aren't already set
 if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
@@ -18,10 +18,11 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
 
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
             if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
+                echo "Cache hit: reading device ID from $DEVICE_ID_CACHE_FILE"
                 GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
                 echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
             else
-                echo "Fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
+                echo "Cache miss ($DEVICE_ID_CACHE_FILE not found), fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
                 GATEWAY_THINEDGE_DEVICEID="$(curl -sS $C8Y_BASEURL/user/currentUser | jq -r '.id' | cut -d'_' -f2)"
 
                 if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
@@ -29,8 +30,9 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
                     exit 1
                 fi
 
-                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
                 echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
+                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
+                echo "Cached device ID to $DEVICE_ID_CACHE_FILE"
             fi
             export GATEWAY_THINEDGE_DEVICEID
         fi
@@ -40,10 +42,11 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
         
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
             if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
+                echo "Cache hit: reading device ID from $DEVICE_ID_CACHE_FILE"
                 GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
                 echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
             else
-                echo "Fetching GATEWAY_THINEDGE_DEVICEID using: tedge config get device.id"
+                echo "Cache miss ($DEVICE_ID_CACHE_FILE not found), fetching GATEWAY_THINEDGE_DEVICEID using: tedge config get device.id"
                 GATEWAY_THINEDGE_DEVICEID="$(tedge config get device.id 2>/dev/null ||:)"
 
                 if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
@@ -51,8 +54,9 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
                     exit 1
                 fi
 
-                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
                 echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
+                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
+                echo "Cached device ID to $DEVICE_ID_CACHE_FILE"
             fi
             export GATEWAY_THINEDGE_DEVICEID
         fi
