@@ -2,7 +2,7 @@ FROM debian:12-slim
 
 ARG BUILDTIME
 ARG REVISION
-ARG VERSION=1023.1.0
+ARG VERSION=1023.1.1
 
 LABEL org.opencontainers.image.title="thin-edge.io"
 LABEL org.opencontainers.image.created=$BUILDTIME
@@ -26,7 +26,8 @@ RUN apt-get update \
         wget \
         bash \
         unzip \
-        curl
+        curl \
+        jq
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
