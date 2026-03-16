@@ -17,22 +17,24 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
         fi
 
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-            if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
-                echo "Cache hit: reading device ID from $DEVICE_ID_CACHE_FILE"
-                GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
-                echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
-            else
-                echo "Cache miss ($DEVICE_ID_CACHE_FILE not found), fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
-                GATEWAY_THINEDGE_DEVICEID="$(curl -sS $C8Y_BASEURL/user/currentUser | jq -r '.id' | cut -d'_' -f2)"
+            echo "Fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
+            CURL_RESPONSE="$(curl -sf --connect-timeout 5 --max-time 10 "$C8Y_BASEURL/user/currentUser" 2>/dev/null ||:)"
+            FETCHED_DEVICEID="$(echo "$CURL_RESPONSE" | jq -r '.id // empty' 2>/dev/null | cut -d'_' -f2)"
 
-                if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-                    echo "ERROR: Failed to fetch GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
-                    exit 1
-                fi
-
+            if [ -n "$FETCHED_DEVICEID" ]; then
+                GATEWAY_THINEDGE_DEVICEID="$FETCHED_DEVICEID"
                 echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
                 echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
                 echo "Cached device ID to $DEVICE_ID_CACHE_FILE"
+            else
+                echo "WARNING: Failed to fetch GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser, falling back to cache"
+                if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
+                    GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
+                    echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
+                else
+                    echo "ERROR: No cached device ID found at $DEVICE_ID_CACHE_FILE"
+                    exit 1
+                fi
             fi
             export GATEWAY_THINEDGE_DEVICEID
         fi
