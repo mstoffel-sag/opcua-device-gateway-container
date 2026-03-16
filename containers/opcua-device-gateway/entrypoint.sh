@@ -1,6 +1,8 @@
 #!/bin/sh
 set -e
 
+DEVICE_ID_CACHE_FILE="/data/gateway_device_id.cache"
+
 # Try loading any values, which aren't already set
 if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
     echo "ThinEdge mode enabled"
@@ -15,15 +17,21 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
         fi
 
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-            echo "Fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser" 
-            GATEWAY_THINEDGE_DEVICEID="$(curl -sS $C8Y_BASEURL/user/currentUser | jq -r '.id' | cut -d'_' -f2)"
-            
-            if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-                echo "ERROR: Failed to fetch GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
-                exit 1
+            if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
+                GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
+                echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
+            else
+                echo "Fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
+                GATEWAY_THINEDGE_DEVICEID="$(curl -sS $C8Y_BASEURL/user/currentUser | jq -r '.id' | cut -d'_' -f2)"
+
+                if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
+                    echo "ERROR: Failed to fetch GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
+                    exit 1
+                fi
+
+                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
+                echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
             fi
-            
-            echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID" 
             export GATEWAY_THINEDGE_DEVICEID
         fi
     else
@@ -31,15 +39,21 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
         echo "Direct mode (no HTTP proxy), fetching values from tedge config"
         
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-            echo "Fetching GATEWAY_THINEDGE_DEVICEID using: tedge config get device.id"
-            GATEWAY_THINEDGE_DEVICEID="$(tedge config get device.id 2>/dev/null ||:)"
-            
-            if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
-                echo "ERROR: Failed to fetch device.id from tedge config"
-                exit 1
+            if [ -f "$DEVICE_ID_CACHE_FILE" ]; then
+                GATEWAY_THINEDGE_DEVICEID="$(cat "$DEVICE_ID_CACHE_FILE")"
+                echo "Loaded GATEWAY_THINEDGE_DEVICEID from cache: $GATEWAY_THINEDGE_DEVICEID"
+            else
+                echo "Fetching GATEWAY_THINEDGE_DEVICEID using: tedge config get device.id"
+                GATEWAY_THINEDGE_DEVICEID="$(tedge config get device.id 2>/dev/null ||:)"
+
+                if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
+                    echo "ERROR: Failed to fetch device.id from tedge config"
+                    exit 1
+                fi
+
+                echo "$GATEWAY_THINEDGE_DEVICEID" > "$DEVICE_ID_CACHE_FILE"
+                echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
             fi
-            
-            echo "Got GATEWAY_THINEDGE_DEVICEID=$GATEWAY_THINEDGE_DEVICEID"
             export GATEWAY_THINEDGE_DEVICEID
         fi
 
