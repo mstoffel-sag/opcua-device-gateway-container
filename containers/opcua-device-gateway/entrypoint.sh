@@ -18,8 +18,9 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
 
         if [ -z "$GATEWAY_THINEDGE_DEVICEID" ]; then
             echo "Fetching GATEWAY_THINEDGE_DEVICEID from $C8Y_BASEURL/user/currentUser"
-            CURL_RESPONSE="$(curl -sf --connect-timeout 5 --max-time 10 "$C8Y_BASEURL/user/currentUser" 2>/dev/null ||:)"
-            FETCHED_DEVICEID="$(echo "$CURL_RESPONSE" | jq -r '.id // empty' 2>/dev/null | cut -d'_' -f2)"
+            export TEDGE_C8Y_PROXY_CLIENT_HOST=$(echo "$C8Y_BASEURL" | sed  's|http://||g' | sed 's|https://||g' | cut -d: -f1)
+            echo "Set TEDGE_C8Y_PROXY_CLIENT_HOST to $TEDGE_C8Y_PROXY_CLIENT_HOST for tedge http command"
+            FETCHED_DEVICEID="$(tedge http get /c8y/user/currentUser | jq -r '.id' | cut -d'_' -f2-)"
 
             if [ -n "$FETCHED_DEVICEID" ]; then
                 GATEWAY_THINEDGE_DEVICEID="$FETCHED_DEVICEID"
