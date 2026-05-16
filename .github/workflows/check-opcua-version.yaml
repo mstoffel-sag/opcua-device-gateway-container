@@ -97,6 +97,11 @@ jobs:
     needs: check-and-update
     if: needs.check-and-update.outputs.changed == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      binary_id: ${{ steps.upload-compose.outputs.binary_id }}
     env:
       C8Y_HOST: ${{ secrets.C8Y_HOST }}
       C8Y_USER: ${{ secrets.C8Y_USER }}
@@ -104,16 +109,30 @@ jobs:
       C8Y_MODE: dev
       # Unique device name scoped to this run so concurrent runs don't collide
       DEVICE_NAME: opcua-ci-${{ github.run_id }}
+      CI_IMAGE: ghcr.io/${{ github.repository_owner }}/opcua-device-gateway:ci-${{ github.run_id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: |
-          docker build \
-            --build-arg VERSION=${{ needs.check-and-update.outputs.latest_version }} \
-            -t opcua-device-gateway:${{ needs.check-and-update.outputs.latest_version }} \
-            containers/opcua-device-gateway/
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push CI image
+        uses: docker/build-push-action@v5
+        with:
+          context: containers/opcua-device-gateway
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.CI_IMAGE }}
+          build-args: |
+            VERSION=${{ needs.check-and-update.outputs.latest_version }}
 
       - name: Install c8y CLI
         run: wget -qO - https://get.c8y.app | sh -s
@@ -124,11 +143,29 @@ jobs:
       - name: Authenticate c8y session
         run: c8y sessions login --from-env >> "$GITHUB_ENV"
 
+      - name: Prepare gateway compose with CI image
+        id: upload-compose
+        run: |
+          UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
+          curl -fsSL "$UPSTREAM_COMPOSE_URL" -o gateway-compose.yml
+          # Replace the published image with our freshly built CI image
+          sed -i "s|ghcr.io/thin-edge/opcua-device-gateway:latest|${CI_IMAGE}|g" gateway-compose.yml
+          # Upload to c8y binary storage so the device can download it
+          RESPONSE=$(c8y binaries create --file gateway-compose.yml --name "gateway-compose-ci-${{ github.run_id }}")
+          BINARY_ID=$(echo "$RESPONSE" | jq -r '.id')
+          BINARY_URL=$(echo "$RESPONSE" | jq -r '.self')
+          echo "binary_id=$BINARY_ID" >> "$GITHUB_OUTPUT"
+          echo "BINARY_URL=$BINARY_URL" >> "$GITHUB_ENV"
+          echo "Uploaded CI compose (id=$BINARY_ID) to $BINARY_URL"
+
       - name: Provision OPC-UA demo
         run: |
+          UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
           curl -fsSL \
             https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/main/startOPCDemoContainer.sh \
             -o startOPCDemoContainer.sh
+          # Replace the compose URL so the device pulls our CI image
+          sed -i "s|${UPSTREAM_COMPOSE_URL}|${BINARY_URL}|g" startOPCDemoContainer.sh
           chmod +x startOPCDemoContainer.sh
           ./startOPCDemoContainer.sh "$DEVICE_NAME"
 
@@ -158,6 +195,7 @@ jobs:
       C8Y_PASSWORD: ${{ secrets.C8Y_PASSWORD }}
       C8Y_MODE: dev
       DEVICE_NAME: opcua-ci-${{ github.run_id }}
+      BINARY_ID: ${{ needs.integration-test.outputs.binary_id }}
     steps:
       - name: Install c8y CLI
         run: wget -qO - https://get.c8y.app | sh -s
@@ -176,3 +214,20 @@ jobs:
           c8y inventory find --name "$DEVICE_NAME" --type thin-edge.io \
             | c8y inventory delete 2>/dev/null || true
           echo "Teardown complete."
+
+      - name: Delete CI compose binary
+        run: |
+          if [ -n "$BINARY_ID" ]; then
+            echo "Deleting CI compose binary $BINARY_ID..."
+            c8y binaries delete --id "$BINARY_ID" 2>/dev/null || true
+          fi
+
+      - name: Delete CI image from GHCR
+        if: always()
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: opcua-device-gateway
+          package-type: container
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore-versions: '^(?!ci-${{ github.run_id }}).*'
+          min-versions-to-keep: 0
