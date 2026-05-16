@@ -162,6 +162,15 @@ jobs:
           echo "COMPOSE_RAW_URL=$COMPOSE_RAW_URL" >> "$GITHUB_ENV"
           echo "Pushed CI compose to branch $CI_BRANCH: $COMPOSE_RAW_URL"
 
+      - name: Ensure CI compose URL is registered for opcua-device-gateway software
+        run: |
+          # If the software already exists in the tenant (from a previous run), its
+          # demo-container version URL won't be updated by the demo script (it skips creation).
+          # Proactively update it here so the device always pulls our CI image.
+          c8y software find --name opcua-device-gateway --pageSize 1 2>/dev/null \
+            | c8y software versions list --version demo-container 2>/dev/null \
+            | c8y software versions update --url "$COMPOSE_RAW_URL" 2>/dev/null || true
+
       - name: Provision OPC-UA demo
         run: |
           UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
