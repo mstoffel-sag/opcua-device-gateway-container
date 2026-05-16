@@ -108,7 +108,7 @@ jobs:
         run: wget -qO - https://get.c8y.app | sh -s
 
       - name: Authenticate c8y session
-        run: eval "$(c8y sessions login --from-env)"
+        run: c8y sessions login --from-env >> "$GITHUB_ENV"
 
       - name: Provision OPC-UA demo
         run: |
@@ -149,7 +149,7 @@ jobs:
         run: wget -qO - https://get.c8y.app | sh -s
 
       - name: Authenticate c8y session
-        run: eval "$(c8y sessions login --from-env)"
+        run: c8y sessions login --from-env >> "$GITHUB_ENV"
 
       - name: Stop and delete demo device
         run: |
