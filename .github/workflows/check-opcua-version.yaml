@@ -16,6 +16,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,6 +69,7 @@ jobs:
           fi
 
       - name: Open pull request
+        id: pr
         if: steps.update.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
@@ -87,3 +90,72 @@ jobs:
             JAR source: https://resources.cumulocity.com/examples/opc-ua/${{ steps.latest.outputs.version }}/
           base: main
           delete-branch: true
+
+  # ── Job 2 ── Provision a full demo and validate the new gateway version ───────
+  integration-test:
+    needs: check-and-update
+    if: needs.check-and-update.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      C8Y_HOST: ${{ secrets.C8Y_HOST }}
+      C8Y_USER: ${{ secrets.C8Y_USER }}
+      C8Y_PASSWORD: ${{ secrets.C8Y_PASSWORD }}
+      C8Y_MODE: dev
+      # Unique device name scoped to this run so concurrent runs don't collide
+      DEVICE_NAME: opcua-ci-${{ github.run_id }}
+    steps:
+      - name: Install c8y CLI
+        run: wget -qO - https://get.c8y.app | sh -s
+
+      - name: Authenticate c8y session
+        run: eval "$(c8y sessions login --from-env)"
+
+      - name: Provision OPC-UA demo
+        run: |
+          curl -fsSL \
+            https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/main/startOPCDemoContainer.sh \
+            -o startOPCDemoContainer.sh
+          chmod +x startOPCDemoContainer.sh
+          ./startOPCDemoContainer.sh "$DEVICE_NAME"
+
+      - name: Wait for Pump01 device data
+        run: |
+          echo "Waiting for measurements from Pump01..."
+          TIMEOUT=300
+          ELAPSED=0
+          until c8y measurements list --device "$DEVICE_NAME" --pageSize 1 --silentStatusCodes 404 2>/dev/null | jq -e 'length > 0' > /dev/null; do
+            if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+              echo "Timed out waiting for measurements."
+              exit 1
+            fi
+            sleep 10
+            ELAPSED=$((ELAPSED + 10))
+          done
+          echo "Measurements received – integration test passed."
+
+  # ── Job 3 ── Always clean up the demo device after the test ──────────────────
+  teardown:
+    needs: integration-test
+    if: always() && needs.integration-test.result != 'skipped'
+    runs-on: ubuntu-24.04
+    env:
+      C8Y_HOST: ${{ secrets.C8Y_HOST }}
+      C8Y_USER: ${{ secrets.C8Y_USER }}
+      C8Y_PASSWORD: ${{ secrets.C8Y_PASSWORD }}
+      C8Y_MODE: dev
+      DEVICE_NAME: opcua-ci-${{ github.run_id }}
+    steps:
+      - name: Install c8y CLI
+        run: wget -qO - https://get.c8y.app | sh -s
+
+      - name: Authenticate c8y session
+        run: eval "$(c8y sessions login --from-env)"
+
+      - name: Stop and delete demo device
+        run: |
+          echo "Stopping demo for $DEVICE_NAME..."
+          c8y tedge demo stop "$DEVICE_NAME" --yes 2>/dev/null || true
+          echo "Deleting device $DEVICE_NAME from inventory..."
+          c8y inventory find --name "$DEVICE_NAME" --type thin-edge.io \
+            | c8y inventory delete 2>/dev/null || true
+          echo "Teardown complete."
