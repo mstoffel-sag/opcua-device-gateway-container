@@ -98,10 +98,10 @@ jobs:
     if: needs.check-and-update.outputs.changed == 'true'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       packages: write
     outputs:
-      gist_id: ${{ steps.compose.outputs.gist_id }}
+      ci_branch: ${{ steps.compose.outputs.ci_branch }}
     env:
       C8Y_HOST: ${{ secrets.C8Y_HOST }}
       C8Y_USER: ${{ secrets.C8Y_USER }}
@@ -113,9 +113,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        with:
+          token: ${{ secrets.WORKFLOW_PAT }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -145,20 +144,23 @@ jobs:
 
       - name: Prepare patched gateway compose
         id: compose
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          CI_BRANCH="ci/compose-${{ github.run_id }}"
           UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
-          curl -fsSL "$UPSTREAM_COMPOSE_URL" -o gateway-compose.yml
+          curl -fsSL "$UPSTREAM_COMPOSE_URL" -o docker-compose-opcua-device-gateway-ci.yml
           # Replace the published image with our freshly built CI image
-          sed -i "s|ghcr.io/thin-edge/opcua-device-gateway:latest|${CI_IMAGE}|g" gateway-compose.yml
-          # Host the patched compose as a temporary public gist (no c8y storage needed)
-          GIST_URL=$(gh gist create --public --desc "CI test compose ${{ github.run_id }}" gateway-compose.yml)
-          GIST_ID=$(basename "$GIST_URL")
-          GIST_RAW_URL="https://gist.githubusercontent.com/${{ github.actor }}/${GIST_ID}/raw/gateway-compose.yml"
-          echo "gist_id=$GIST_ID" >> "$GITHUB_OUTPUT"
-          echo "GIST_RAW_URL=$GIST_RAW_URL" >> "$GITHUB_ENV"
-          echo "Created gist $GIST_ID: $GIST_RAW_URL"
+          sed -i "s|ghcr.io/thin-edge/opcua-device-gateway:latest|${CI_IMAGE}|g" docker-compose-opcua-device-gateway-ci.yml
+          # Push the patched compose to a temp branch so the device can fetch it via raw URL
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -b "$CI_BRANCH"
+          git add docker-compose-opcua-device-gateway-ci.yml
+          git commit -m "ci: temp patched compose for run ${{ github.run_id }}"
+          git push origin "$CI_BRANCH"
+          COMPOSE_RAW_URL="https://raw.githubusercontent.com/${{ github.repository }}/${CI_BRANCH}/docker-compose-opcua-device-gateway-ci.yml"
+          echo "ci_branch=$CI_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "COMPOSE_RAW_URL=$COMPOSE_RAW_URL" >> "$GITHUB_ENV"
+          echo "Pushed CI compose to branch $CI_BRANCH: $COMPOSE_RAW_URL"
 
       - name: Provision OPC-UA demo
         run: |
@@ -167,7 +169,7 @@ jobs:
             https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/main/startOPCDemoContainer.sh \
             -o startOPCDemoContainer.sh
           # Replace the compose URL so the device pulls our CI image
-          sed -i "s|${UPSTREAM_COMPOSE_URL}|${GIST_RAW_URL}|g" startOPCDemoContainer.sh
+          sed -i "s|${UPSTREAM_COMPOSE_URL}|${COMPOSE_RAW_URL}|g" startOPCDemoContainer.sh
           chmod +x startOPCDemoContainer.sh
           ./startOPCDemoContainer.sh "$DEVICE_NAME"
 
@@ -197,7 +199,7 @@ jobs:
       C8Y_PASSWORD: ${{ secrets.C8Y_PASSWORD }}
       C8Y_MODE: dev
       DEVICE_NAME: opcua-ci-${{ github.run_id }}
-      GIST_ID: ${{ needs.integration-test.outputs.gist_id }}
+      CI_BRANCH: ${{ needs.integration-test.outputs.ci_branch }}
     steps:
       - name: Install c8y CLI
         run: wget -qO - https://get.c8y.app | sh -s
@@ -217,13 +219,13 @@ jobs:
             | c8y inventory delete 2>/dev/null || true
           echo "Teardown complete."
 
-      - name: Delete CI compose gist
+      - name: Delete CI compose branch
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.WORKFLOW_PAT }}
         run: |
-          if [ -n "$GIST_ID" ]; then
-            echo "Deleting gist $GIST_ID..."
-            gh gist delete "$GIST_ID" 2>/dev/null || true
+          if [ -n "$CI_BRANCH" ]; then
+            echo "Deleting CI branch $CI_BRANCH..."
+            gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${CI_BRANCH}" 2>/dev/null || true
           fi
 
       - name: Delete CI image from GHCR
