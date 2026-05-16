@@ -145,6 +145,8 @@ jobs:
 
       - name: Prepare patched gateway compose
         id: compose
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
           curl -fsSL "$UPSTREAM_COMPOSE_URL" -o gateway-compose.yml
@@ -216,6 +218,8 @@ jobs:
           echo "Teardown complete."
 
       - name: Delete CI compose gist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "$GIST_ID" ]; then
             echo "Deleting gist $GIST_ID..."
