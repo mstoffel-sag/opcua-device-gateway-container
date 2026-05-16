@@ -1,0 +1,89 @@
+name: check-opcua-version
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      mock_current_version:
+        description: 'Pretend this is the current version (for testing). Leave empty for normal operation.'
+        required: false
+        default: ''
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest version from Cumulocity
+        id: latest
+        run: |
+          LATEST=$(curl -s https://resources.cumulocity.com/examples/opc-ua/ \
+            | grep -oP 'href="\K[0-9]+\.[0-9]+\.[0-9]+(?=/)' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -z "$LATEST" ]; then
+            echo "Failed to determine latest version" >&2
+            exit 1
+          fi
+          MAJOR=$(echo "$LATEST" | cut -d. -f1)
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "Latest version: $LATEST (major: $MAJOR)"
+
+      - name: Get current version from publish.yaml
+        id: current
+        run: |
+          if [ -n "${{ inputs.mock_current_version }}" ]; then
+            CURRENT="${{ inputs.mock_current_version }}"
+            echo "Using mock current version: $CURRENT"
+          else
+            CURRENT=$(python3 .github/scripts/update_opcua_version.py --get-current)
+          fi
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "Current version: $CURRENT (major: $MAJOR)"
+
+      - name: Update versions in publish.yaml
+        id: update
+        env:
+          LATEST: ${{ steps.latest.outputs.version }}
+          CURRENT: ${{ steps.current.outputs.version }}
+          LATEST_MAJOR: ${{ steps.latest.outputs.major }}
+          CURRENT_MAJOR: ${{ steps.current.outputs.major }}
+        run: |
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "Already at latest version ($CURRENT), nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            python3 .github/scripts/update_opcua_version.py
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open pull request
+        if: steps.update.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # Fine-grained PAT with Contents (write) + Workflows (write) + Pull requests (write)
+          # on this repository. See .github/workflows/check-opcua-version.yaml for setup instructions.
+          token: ${{ secrets.WORKFLOW_PAT }}
+          branch: update/opcua-version-${{ steps.latest.outputs.version }}
+          commit-message: "chore: update opcua-device-gateway version to ${{ steps.latest.outputs.version }}"
+          title: "chore: update opcua-device-gateway version to ${{ steps.latest.outputs.version }}"
+          body: |
+            Automated version bump of `opcua-device-gateway`.
+
+            | | Version |
+            |---|---|
+            | Previous | `${{ steps.current.outputs.version }}` |
+            | New | `${{ steps.latest.outputs.version }}` |
+
+            JAR source: https://resources.cumulocity.com/examples/opc-ua/${{ steps.latest.outputs.version }}/
+          base: main
+          delete-branch: true
