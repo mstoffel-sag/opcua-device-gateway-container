@@ -18,6 +18,7 @@ jobs:
       pull-requests: read
     outputs:
       changed: ${{ steps.update.outputs.changed }}
+      latest_version: ${{ steps.latest.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,8 +105,21 @@ jobs:
       # Unique device name scoped to this run so concurrent runs don't collide
       DEVICE_NAME: opcua-ci-${{ github.run_id }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg VERSION=${{ needs.check-and-update.outputs.latest_version }} \
+            -t opcua-device-gateway:${{ needs.check-and-update.outputs.latest_version }} \
+            containers/opcua-device-gateway/
+
       - name: Install c8y CLI
         run: wget -qO - https://get.c8y.app | sh -s
+
+      - name: Install tedge c8y extension
+        run: c8y extension install thin-edge/c8y-tedge
 
       - name: Authenticate c8y session
         run: c8y sessions login --from-env >> "$GITHUB_ENV"
@@ -147,6 +161,9 @@ jobs:
     steps:
       - name: Install c8y CLI
         run: wget -qO - https://get.c8y.app | sh -s
+
+      - name: Install tedge c8y extension
+        run: c8y extension install thin-edge/c8y-tedge
 
       - name: Authenticate c8y session
         run: c8y sessions login --from-env >> "$GITHUB_ENV"
