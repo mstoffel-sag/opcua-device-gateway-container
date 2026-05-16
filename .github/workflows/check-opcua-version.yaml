@@ -165,13 +165,14 @@ jobs:
       - name: Provision OPC-UA demo
         run: |
           UPSTREAM_COMPOSE_URL="https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml"
+          DEMO_SCRIPT=$(mktemp /tmp/startOPCDemoContainer.XXXXXX.sh)
           curl -fsSL \
             https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/main/startOPCDemoContainer.sh \
-            -o startOPCDemoContainer.sh
+            -o "$DEMO_SCRIPT"
           # Replace the compose URL so the device pulls our CI image
-          sed -i "s|${UPSTREAM_COMPOSE_URL}|${COMPOSE_RAW_URL}|g" startOPCDemoContainer.sh
-          chmod +x startOPCDemoContainer.sh
-          ./startOPCDemoContainer.sh "$DEVICE_NAME"
+          sed -i "s|${UPSTREAM_COMPOSE_URL}|${COMPOSE_RAW_URL}|g" "$DEMO_SCRIPT"
+          chmod +x "$DEMO_SCRIPT"
+          "$DEMO_SCRIPT" "$DEVICE_NAME"
 
       - name: Wait for Pump01 device data
         run: |
