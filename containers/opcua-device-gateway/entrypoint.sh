@@ -68,9 +68,14 @@ if [ "$GATEWAY_THINEDGE_ENABLED" = true ]; then
             echo "Fetching C8Y_BASEURL using: tedge config get c8y.url"
             C8Y_URL="$(tedge config get c8y.url 2>&1 ||:)"
             
-            # Check if the command returned an error message or empty value
+            # Check if the command returned an error message or empty value, fall back to c8y.http
             if [ -z "$C8Y_URL" ] || echo "$C8Y_URL" | grep -q "not set"; then
-                echo "ERROR: c8y.url is not configured in tedge config"
+                echo "c8y.url is not set, falling back to: tedge config get c8y.http"
+                C8Y_URL="$(tedge config get c8y.http 2>&1 ||:)"
+            fi
+
+            if [ -z "$C8Y_URL" ] || echo "$C8Y_URL" | grep -q "not set"; then
+                echo "ERROR: Neither c8y.url nor c8y.http is configured in tedge config"
                 exit 1
             fi
             
