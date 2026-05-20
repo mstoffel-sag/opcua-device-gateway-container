@@ -2,34 +2,48 @@ name: publish
 
 on:
   workflow_dispatch:
-  pull_request:
+    inputs:
+      opcua_version:
+        description: 'OPC-UA gateway version (leave empty to use tracked-versions.json)'
+        required: false
+      tedge_version:
+        description: 'thinEdge version (leave empty to use tracked-versions.json)'
+        required: false
   push:
-    tags:
-      - "*"
+    branches:
+      - main
+    paths:
+      - '.github/tracked-versions.json'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'containers/opcua-device-gateway/**'
+      - '.github/tracked-versions.json'
+      - '.github/workflows/publish.yaml'
+      - '.github/workflows/test-integration.yaml'
+
+# Only one publish (and one test-integration / check-versions) at a time.
+# Per-PR concurrency so a new push to the same PR cancels the previous run.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('opcua-gateway-ci-pr-{0}', github.event.pull_request.number) || 'opcua-gateway-ci' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Wait until all other publishing jobs are finished
-  # before publishing the virtual packages (which are architecture agnostic)
-  publish-containers:
-    name: ${{ matrix.target.image }} (${{ matrix.target.opcua_version }})
+  build:
+    name: Build CI image
     runs-on: ubuntu-24.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          # Keep the "opcua-device-gateway" image on the latest available version
-          # which should align with the Cumulocity version used on the cloud trial tenants (e.g. eu-latest.cumulocity.com)
-
-          - opcua_version: "1023.1.1"
-            image: opcua-device-gateway
-
-          - opcua_version: "1023.1.1"
-            image: opcua-device-gateway-1023
+    outputs:
+      ci_image: ${{ steps.tags.outputs.ci_image }}
+      ci_tag: ${{ steps.tags.outputs.ci_tag }}
+      version_tag: ${{ steps.versions.outputs.image_tag }}
+      opcua_version: ${{ steps.versions.outputs.opcua_version }}
+      tedge_version: ${{ steps.versions.outputs.tedge_version }}
 
     steps:
       - name: Checkout
@@ -37,7 +51,32 @@ jobs:
         with:
           lfs: true
           fetch-depth: 0
-      - uses: extractions/setup-just@v2
+
+      - name: Resolve versions
+        id: versions
+        run: |
+          OPCUA_VERSION="${{ inputs.opcua_version }}"
+          TEDGE_VERSION="${{ inputs.tedge_version }}"
+          if [ -z "$OPCUA_VERSION" ] || [ -z "$TEDGE_VERSION" ]; then
+            OPCUA_VERSION=$(jq -r '.opcua_version' .github/tracked-versions.json)
+            TEDGE_VERSION=$(jq -r '.tedge_version' .github/tracked-versions.json)
+          fi
+          TEDGE_TAG=$(echo "$TEDGE_VERSION" | sed 's/[~+]/-/g')
+          echo "opcua_version=$OPCUA_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tedge_version=$TEDGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${OPCUA_VERSION}-tedge${TEDGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "OPC-UA version:   $OPCUA_VERSION"
+          echo "thinEdge version: $TEDGE_VERSION"
+          echo "Version tag:      ${OPCUA_VERSION}-tedge${TEDGE_TAG}"
+
+      - name: Compute CI tag
+        id: tags
+        run: |
+          CI_TAG="ci-${{ github.run_id }}"
+          CI_IMAGE="ghcr.io/${{ github.repository_owner }}/opcua-device-gateway:${CI_TAG}"
+          echo "ci_tag=${CI_TAG}" >> "$GITHUB_OUTPUT"
+          echo "ci_image=${CI_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "CI image: ${CI_IMAGE}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -50,25 +89,93 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker meta
+      - name: Docker meta (CI tag only)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            name=ghcr.io/${{ github.repository_owner }}/${{ matrix.target.image }},enable=true
+            name=ghcr.io/${{ github.repository_owner }}/opcua-device-gateway,enable=true
           tags: |
-            type=raw,value={{tag}}
-            type=raw,value=latest
+            type=raw,value=${{ steps.tags.outputs.ci_tag }}
 
-      - name: Build and push
+      - name: Build and push CI image
         uses: docker/build-push-action@v5
         with:
           context: containers/opcua-device-gateway
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
-            VERSION=${{ matrix.target.opcua_version }}
+            VERSION=${{ steps.versions.outputs.opcua_version }}
+            TEDGE_VERSION=${{ steps.versions.outputs.tedge_version }}
+
+  test:
+    name: Integration test
+    needs: build
+    uses: ./.github/workflows/test-integration.yaml
+    with:
+      image: ${{ needs.build.outputs.ci_image }}
+    secrets: inherit
+
+  promote:
+    name: Promote CI image to version + latest
+    needs: [build, test]
+    # Don't promote on PRs — only on main / dispatch
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-tag CI image as version + latest (no rebuild)
+        run: |
+          SRC="${{ needs.build.outputs.ci_image }}"
+          REPO="ghcr.io/${{ github.repository_owner }}/opcua-device-gateway"
+          VERSION_TAG="${{ needs.build.outputs.version_tag }}"
+          docker buildx imagetools create \
+            --tag "${REPO}:${VERSION_TAG}" \
+            --tag "${REPO}:latest" \
+            "${SRC}"
+          echo "Promoted ${SRC} -> ${REPO}:${VERSION_TAG}, ${REPO}:latest"
+
+  cleanup-ci-tag:
+    name: Delete CI tag from registry
+    needs: [build, test, promote]
+    # Run if build succeeded, even when test failed or promote was skipped (PRs).
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Delete ci-<run_id> tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PKG: opcua-device-gateway
+          CI_TAG: ${{ needs.build.outputs.ci_tag }}
+        run: |
+          set +e
+          for ENDPOINT in \
+              "/orgs/${OWNER}/packages/container/${PKG}/versions" \
+              "/users/${OWNER}/packages/container/${PKG}/versions"; do
+            VERSION_ID=$(gh api --paginate "$ENDPOINT" \
+              --jq ".[] | select(.metadata.container.tags[]? == \"${CI_TAG}\") | .id" \
+              2>/dev/null | head -1)
+            if [ -n "$VERSION_ID" ]; then
+              gh api -X DELETE "${ENDPOINT}/${VERSION_ID}" \
+                && echo "Deleted ${CI_TAG} (version id=${VERSION_ID}) via ${ENDPOINT}" \
+                && exit 0
+            fi
+          done
+          echo "::warning::Could not find or delete ${CI_TAG} in registry"
