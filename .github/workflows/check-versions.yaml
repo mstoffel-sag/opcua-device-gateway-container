@@ -1,0 +1,101 @@
+name: Check for new versions
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 06:00 UTC
+  workflow_dispatch:
+
+# Serialize with publish + test-integration so only one workflow runs at a time.
+concurrency:
+  group: opcua-gateway-ci
+  cancel-in-progress: false
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get latest OPC-UA version
+        id: opcua
+        run: |
+          LATEST=$(curl -sf https://resources.cumulocity.com/examples/opc-ua/ \
+            | grep -oP '(?<=href=")[0-9]+\.[0-9]+\.[0-9]+(?=/)' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -z "$LATEST" ]; then
+            echo "::error::Failed to determine latest OPC-UA version"
+            exit 1
+          fi
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest OPC-UA version: $LATEST"
+
+      - name: Get latest thinEdge version
+        id: tedge
+        run: |
+          # Query Cloudsmith API for the latest tedge Debian package (amd64) from tedge-main
+          FULL=$(curl -sf \
+            "https://api.cloudsmith.io/v1/packages/thinedge/tedge-main/?q=name%3Atedge+format%3Adeb+architecture%3Aamd64&page_size=10&sort=-date" \
+            | jq -r '[.[] | select(.name == "tedge")] | .[0].version')
+          if [ -z "$FULL" ] || [ "$FULL" = "null" ]; then
+            echo "::error::Failed to determine latest thinEdge version"
+            exit 1
+          fi
+          # Strip Debian build metadata — keep only the leading semver (e.g. "2.0.1~109+g36b9024" -> "2.0.1")
+          LATEST=$(echo "$FULL" | sed 's/[~+].*//')
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest thinEdge version: $LATEST (full: $FULL)"
+
+      - name: Read currently tracked versions
+        id: current
+        run: |
+          if [ -f .github/tracked-versions.json ]; then
+            OPCUA=$(jq -r '.opcua_version // ""' .github/tracked-versions.json)
+            TEDGE=$(jq -r '.tedge_version // ""' .github/tracked-versions.json)
+          else
+            OPCUA=""
+            TEDGE=""
+          fi
+          echo "opcua=$OPCUA" >> "$GITHUB_OUTPUT"
+          echo "tedge=$TEDGE" >> "$GITHUB_OUTPUT"
+          echo "Currently tracked OPC-UA version: $OPCUA"
+          echo "Currently tracked thinEdge version: $TEDGE"
+
+      - name: Detect version changes
+        id: changed
+        run: |
+          NEW_OPCUA="${{ steps.opcua.outputs.version }}"
+          NEW_TEDGE="${{ steps.tedge.outputs.version }}"
+          CUR_OPCUA="${{ steps.current.outputs.opcua }}"
+          CUR_TEDGE="${{ steps.current.outputs.tedge }}"
+          if [ "$NEW_OPCUA" != "$CUR_OPCUA" ] || [ "$NEW_TEDGE" != "$CUR_TEDGE" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version change detected:"
+            echo "  OPC-UA:   $CUR_OPCUA -> $NEW_OPCUA"
+            echo "  thinEdge: $CUR_TEDGE -> $NEW_TEDGE"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No version changes detected."
+          fi
+
+      - name: Update tracked-versions.json
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          jq -n \
+            --arg opcua "${{ steps.opcua.outputs.version }}" \
+            --arg tedge "${{ steps.tedge.outputs.version }}" \
+            '{opcua_version: $opcua, tedge_version: $tedge}' \
+            > .github/tracked-versions.json
+          cat .github/tracked-versions.json
+
+      - name: Commit and push updated versions
+        if: steps.changed.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/tracked-versions.json
+          git commit -m "chore: bump versions [opcua=${{ steps.opcua.outputs.version }}, tedge=${{ steps.tedge.outputs.version }}]"
+          git push
