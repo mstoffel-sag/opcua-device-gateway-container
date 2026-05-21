@@ -111,21 +111,33 @@ runs:
         echo "--- Cleanup for $DEVICE_NAME ---"
 
         # Removes the tedge device, its child devices (Pump01), and the
-        # trusted device certificate in one shot.
+        # trusted device certificate in one shot. Also stops the local
+        # docker compose stack.
         c8y tedge demo delete "$DEVICE_NAME" -n || true
-
-        # Stop the local docker compose stack
         c8y tedge demo stop "$DEVICE_NAME" -n || true
 
         # Delete the run-scoped software entries we created. Names match the
         # sed patch above (`<name>-${DEVICE_NAME}`) so this only ever touches
-        # entries owned by this run.
+        # entries owned by this run. We use `c8y software list` (not `find`,
+        # which is a c8y-tedge alias whose output format we cannot rely on
+        # across versions) and iterate with a here-string so the delete loop
+        # runs in the parent shell (jq | while pipes the loop into a subshell
+        # that swallows errors silently).
         for SW in "opcua-server-${DEVICE_NAME}" "opcua-device-gateway-${DEVICE_NAME}"; do
-          c8y software find -n --name "$SW" 2>/dev/null \
-            | jq -r '.id // empty' \
-            | while read -r ID; do
-                [ -n "$ID" ] && c8y software delete -n --id "$ID" --forceCascade || true
-              done
+          echo "Looking up software '$SW'..."
+          IDS=$(c8y software list -n --name "$SW" --pageSize 100 \
+            | jq -r '.id // empty')
+          if [ -z "$IDS" ]; then
+            echo "  no software entry found for '$SW'"
+            continue
+          fi
+          while read -r ID; do
+            [ -z "$ID" ] && continue
+            echo "  deleting software '$SW' (id $ID)..."
+            c8y software delete -n --id "$ID" --forceCascade \
+              && echo "    deleted." \
+              || echo "::warning::failed to delete software id $ID"
+          done <<< "$IDS"
         done
 
         echo "--- Cleanup done ---"
