@@ -15,9 +15,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Use a PAT (if available) so that PRs opened by this workflow can
+          # trigger downstream `publish.yaml` runs on `pull_request`. With the
+          # default GITHUB_TOKEN, GitHub suppresses workflow events on
+          # bot-created PRs as a recursion-protection mechanism.
+          token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Get latest OPC-UA version
         id: opcua
@@ -36,18 +43,19 @@ jobs:
       - name: Get latest thinEdge version
         id: tedge
         run: |
-          # Query Cloudsmith API for the latest tedge Debian package (amd64) from tedge-main
-          FULL=$(curl -sf \
-            "https://api.cloudsmith.io/v1/packages/thinedge/tedge-main/?q=name%3Atedge+format%3Adeb+architecture%3Aamd64&page_size=10&sort=-date" \
+          # Query Cloudsmith for the latest tedge Debian package (amd64) from
+          # the official `tedge-release` repo. Use the version string verbatim
+          # — official releases publish clean semver tags (e.g. "1.6.0"), so
+          # no Debian build-metadata stripping is needed.
+          LATEST=$(curl -sf \
+            "https://api.cloudsmith.io/v1/packages/thinedge/tedge-release/?q=name%3Atedge+format%3Adeb+architecture%3Aamd64&page_size=10&sort=-date" \
             | jq -r '[.[] | select(.name == "tedge")] | .[0].version')
-          if [ -z "$FULL" ] || [ "$FULL" = "null" ]; then
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
             echo "::error::Failed to determine latest thinEdge version"
             exit 1
           fi
-          # Strip Debian build metadata — keep only the leading semver (e.g. "2.0.1~109+g36b9024" -> "2.0.1")
-          LATEST=$(echo "$FULL" | sed 's/[~+].*//')
           echo "version=$LATEST" >> "$GITHUB_OUTPUT"
-          echo "Latest thinEdge version: $LATEST (full: $FULL)"
+          echo "Latest thinEdge version: $LATEST"
 
       - name: Read currently tracked versions
         id: current
@@ -91,11 +99,33 @@ jobs:
             > .github/tracked-versions.json
           cat .github/tracked-versions.json
 
-      - name: Commit and push updated versions
+      - name: Open / update pull request with bumped versions
         if: steps.changed.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/tracked-versions.json
-          git commit -m "chore: bump versions [opcua=${{ steps.opcua.outputs.version }}, tedge=${{ steps.tedge.outputs.version }}]"
-          git push
+        uses: peter-evans/create-pull-request@v6
+        with:
+          # See note on the checkout step above: WORKFLOW_PAT is required for
+          # the resulting PR to trigger `publish.yaml` via `pull_request`.
+          token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
+          branch: bot/bump-versions
+          base: main
+          # Re-use the same rolling branch so we always have at most one open
+          # "next candidate versions" PR. Force-update if the previous branch
+          # diverged from main.
+          delete-branch: true
+          commit-message: |
+            chore: bump versions [opcua=${{ steps.opcua.outputs.version }}, tedge=${{ steps.tedge.outputs.version }}]
+          title: "chore: bump versions to opcua=${{ steps.opcua.outputs.version }}, tedge=${{ steps.tedge.outputs.version }}"
+          body: |
+            Automated version bump detected by the `check-versions` workflow.
+
+            | Component | Previous | New |
+            | --- | --- | --- |
+            | OPC-UA   | `${{ steps.current.outputs.opcua }}` | `${{ steps.opcua.outputs.version }}` |
+            | thinEdge | `${{ steps.current.outputs.tedge }}` | `${{ steps.tedge.outputs.version }}` |
+
+            The `publish.yaml` workflow will build the CI image and run the integration test against this PR. Merge once the checks are green to promote the new versions to `main`.
+          labels: |
+            automated
+            version-bump
+          author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          committer: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"

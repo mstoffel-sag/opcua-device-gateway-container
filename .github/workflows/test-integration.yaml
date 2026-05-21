@@ -1,4 +1,9 @@
-name: Integration Test
+name: Integration Test (manual)
+
+# Standalone integration test against an already-published image (e.g. on
+# ghcr.io). The CI flow uses the composite action directly inside
+# `publish.yaml`; this workflow is only kept for manual dispatch when a
+# maintainer wants to re-validate a published image against C8Y.
 
 on:
   workflow_dispatch:
@@ -7,25 +12,9 @@ on:
         description: 'Full image ref to test (default: ghcr.io/<owner>/opcua-device-gateway:latest)'
         required: false
         type: string
-  workflow_call:
-    inputs:
-      image:
-        description: 'Full image ref to test'
-        required: true
-        type: string
-    secrets:
-      C8Y_HOST:
-        required: true
-      C8Y_USER:
-        required: true
-      C8Y_PASSWORD:
-        required: true
 
-# When called from another workflow, the caller already holds the shared
-# concurrency lock — use a per-run group to avoid deadlocking on ourselves.
-# When dispatched standalone, share the shared lock with publish.yaml.
 concurrency:
-  group: ${{ inputs.image && format('opcua-gateway-ci-inner-{0}', github.run_id) || 'opcua-gateway-ci' }}
+  group: opcua-gateway-ci
   cancel-in-progress: false
 
 jobs:
@@ -33,15 +22,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    env:
-      C8Y_HOST: ${{ secrets.C8Y_HOST }}
-      C8Y_USER: ${{ secrets.C8Y_USER }}
-      C8Y_PASSWORD: ${{ secrets.C8Y_PASSWORD }}
-      DEVICE_NAME: test-opcua-${{ github.run_id }}
-      C8Y_SETTINGS_SESSION_MODE: dev
-      # Required in non-TTY/CI envs: c8y v2 detects empty stdin as an empty
-      # pipeline and silently no-ops create commands without this flag.
-      C8Y_SETTINGS_DEFAULTS_ALLOWEMPTYPIPE: "true"
 
     steps:
       - name: Checkout
@@ -57,85 +37,10 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Testing image: $IMAGE"
 
-      - name: Install go-c8y-cli
-        uses: reubenmiller/setup-go-c8y-cli@v2
-
-      - name: Install c8y-tedge extension
-        run: c8y extension install thin-edge/c8y-tedge
-
-      - name: Download upstream compose and patch image
-        run: |
-          wget -q \
-            https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml \
-            -O patched-gateway-compose.yml
-
-          sed -i \
-            "s|image: ghcr.io/.*/opcua-device-gateway:.*|image: ${{ steps.img.outputs.image }}|" \
-            patched-gateway-compose.yml
-
-          echo "--- patched compose ---"
-          cat patched-gateway-compose.yml
-
-      - name: Download and patch startOPCDemoContainer.sh
-        run: |
-          UNIQUE_SW_NAME="opcua-device-gateway-ci-${{ github.run_id }}"
-          UNIQUE_OPCUA_SERVER_NAME="opcua-server-ci-${{ github.run_id }}"
-          echo "SW_NAME=$UNIQUE_SW_NAME" >> "$GITHUB_ENV"
-          echo "OPCUA_SERVER_NAME=$UNIQUE_OPCUA_SERVER_NAME" >> "$GITHUB_ENV"
-
-          wget -q \
-            https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/startOPCDemoContainer.sh \
-            -O startOPCDemoContainer.sh
-
-          # Replace the gateway compose URL with our locally patched file.
-          # Must happen BEFORE the renames below so the URL path still matches.
-          sed -i \
-            's|--url https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml|--file ./patched-gateway-compose.yml|' \
-            startOPCDemoContainer.sh
-
-          # Rename gateway software to a unique name to avoid cross-run conflicts.
-          sed -i "s|opcua-device-gateway|${UNIQUE_SW_NAME}|g" startOPCDemoContainer.sh
-          # Same for the opcua-server software (shared name in upstream script).
-          sed -i "s|opcua-server|${UNIQUE_OPCUA_SERVER_NAME}|g" startOPCDemoContainer.sh
-
-      - name: Run startOPCDemoContainer.sh
-        # The upstream script has a trailing buggy `sed` after Pump01 creation
-        # that exits non-zero even on success. Verify step is the source of truth.
-        continue-on-error: true
-        run: sh startOPCDemoContainer.sh "$DEVICE_NAME"
-
-      - name: Verify Pump01 device was created (test passed)
-        run: |
-          PUMP_ID=$(c8y inventory list \
-            --type c8y_OpcuaDevice \
-            --owner "device_$DEVICE_NAME" 2>/dev/null | jq -r '.id // empty')
-          if [ -z "$PUMP_ID" ]; then
-            echo "::error::Pump01 device not found — test FAILED"
-            exit 1
-          fi
-          echo "Test PASSED — Pump01 device found: $PUMP_ID"
-
-      - name: Cleanup — delete all test artifacts
-        if: always()
-        run: |
-          set +e
-          echo "--- Cleanup for run $DEVICE_NAME / $SW_NAME ---"
-
-          # Removes the tedge device, its child devices (Pump01), and the
-          # trusted device certificate in one shot.
-          c8y tedge demo delete "$DEVICE_NAME" || true
-
-          # Unique software entries (created this run only)
-          for NAME in "$SW_NAME" "$OPCUA_SERVER_NAME"; do
-            c8y software list --name "$NAME" --output json 2>/dev/null \
-              | jq -r '.id // empty' \
-              | while read -r ID; do
-                  [ -n "$ID" ] && c8y software delete --id "$ID" && \
-                    echo "Deleted software $NAME ($ID)"
-                done
-          done
-
-          # Stop the local docker compose stack
-          c8y tedge demo stop "$DEVICE_NAME" || true
-
-          echo "--- Cleanup done ---"
+      - name: Run integration test
+        uses: ./.github/actions/integration-test
+        with:
+          image: ${{ steps.img.outputs.image }}
+          c8y_host: ${{ secrets.C8Y_HOST }}
+          c8y_user: ${{ secrets.C8Y_USER }}
+          c8y_password: ${{ secrets.C8Y_PASSWORD }}
