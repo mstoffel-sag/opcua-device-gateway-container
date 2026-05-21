@@ -32,32 +32,26 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build (amd64) + integration test against local registry
-    # Skip on PRs coming from an external fork — required C8Y_* secrets aren't
-    # available there. Same-repo PRs (including from a branch in this repo
-    # back to its own main) still run.
+    name: Build (amd64) + integration test on ghcr.io CI tag
+    # Skip on PRs coming from an external fork — required C8Y_* secrets and a
+    # writable GITHUB_TOKEN aren't available there. Same-repo PRs (including
+    # from a branch in this repo back to its own main) still run.
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    # Local Docker registry on the runner. We push the freshly built CI
-    # image here and pull it from docker compose during the test, so no
-    # CI-only image ever lands on ghcr.io.
-    # See https://docs.docker.com/build/ci/github-actions/local-registry/
-    services:
-      registry:
-        image: registry:2
-        ports:
-          - 5000:5000
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
-      LOCAL_REGISTRY: localhost:5000
     permissions:
       contents: read
+      # Needed to push the temporary CI tag to ghcr.io and to delete it again
+      # in the cleanup step below.
+      packages: write
     outputs:
       opcua_version: ${{ steps.versions.outputs.opcua_version }}
       tedge_version: ${{ steps.versions.outputs.tedge_version }}
       version_tag: ${{ steps.versions.outputs.image_tag }}
+      ci_tag: ${{ steps.versions.outputs.ci_tag }}
 
     steps:
       - name: Checkout
@@ -81,31 +75,41 @@ jobs:
           fi
           TEDGE_TAG=$(echo "$TEDGE_VERSION" | sed 's/[~+]/-/g')
           IMAGE_TAG="${OPCUA_VERSION}-tedge${TEDGE_TAG}"
-          CI_IMAGE="${LOCAL_REGISTRY}/opcua-device-gateway:${IMAGE_TAG}"
+          # Temporary, throwaway tag used only for the integration test. It
+          # is pushed to ghcr.io because podman running inside the gateway
+          # container under test cannot reach a docker registry bound to the
+          # runner's localhost. The tag is deleted again in the cleanup step.
+          CI_TAG="ci-${{ github.run_id }}-${{ github.run_attempt }}"
+          CI_IMAGE="ghcr.io/${{ github.repository_owner }}/opcua-device-gateway:${CI_TAG}"
           echo "opcua_version=$OPCUA_VERSION" >> "$GITHUB_OUTPUT"
           echo "tedge_version=$TEDGE_VERSION" >> "$GITHUB_OUTPUT"
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "ci_tag=$CI_TAG" >> "$GITHUB_OUTPUT"
           echo "ci_image=$CI_IMAGE" >> "$GITHUB_OUTPUT"
           echo "OPC-UA version:   $OPCUA_VERSION"
           echo "thinEdge version: $TEDGE_VERSION"
-          echo "Local CI image:   $CI_IMAGE"
+          echo "Final image tag:  $IMAGE_TAG"
+          echo "CI image (temp):  $CI_IMAGE"
 
       - name: Setup Docker buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          # Required so the builder container can reach the registry service
-          # listening on the runner's localhost:5000.
-          driver-opts: network=host
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.LOCAL_REGISTRY }}/opcua-device-gateway
+          images: ghcr.io/${{ github.repository_owner }}/opcua-device-gateway
           tags: |
-            type=raw,value=${{ steps.versions.outputs.image_tag }}
+            type=raw,value=${{ steps.versions.outputs.ci_tag }}
 
-      - name: Build and push CI image to local registry (amd64 only)
+      - name: Build and push CI image to ghcr.io (amd64 only)
         uses: docker/build-push-action@v5
         with:
           context: containers/opcua-device-gateway
@@ -129,6 +133,38 @@ jobs:
           c8y_host: ${{ secrets.C8Y_HOST }}
           c8y_user: ${{ secrets.C8Y_USER }}
           c8y_password: ${{ secrets.C8Y_PASSWORD }}
+
+      - name: Delete temporary CI tag from ghcr.io
+        if: always() && steps.versions.outputs.ci_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          PKG: opcua-device-gateway
+          TAG: ${{ steps.versions.outputs.ci_tag }}
+        run: |
+          set +e
+          # ghcr.io packages live under either /users/<owner> or
+          # /orgs/<owner> depending on owner type. Probe and use whichever
+          # one returns the package.
+          TYPE=$(gh api "/users/$OWNER" --jq '.type' 2>/dev/null)
+          if [ "$TYPE" = "Organization" ]; then
+            BASE="/orgs/$OWNER/packages/container/$PKG/versions"
+          else
+            BASE="/users/$OWNER/packages/container/$PKG/versions"
+          fi
+
+          VID=$(gh api --paginate "$BASE" \
+            --jq ".[] | select(.metadata.container.tags[]? == \"$TAG\") | .id" \
+            | head -1)
+
+          if [ -z "$VID" ]; then
+            echo "No package version found for tag $TAG (already deleted?) — nothing to do."
+            exit 0
+          fi
+
+          echo "Deleting ghcr.io tag $TAG (version id $VID)..."
+          gh api -X DELETE "$BASE/$VID" && echo "Deleted." || \
+            echo "::warning::Failed to delete ghcr.io tag $TAG (version id $VID)"
 
   publish:
     name: Publish multi-arch image to ghcr.io
