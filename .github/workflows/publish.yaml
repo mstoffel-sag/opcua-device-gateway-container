@@ -33,10 +33,12 @@ concurrency:
 jobs:
   build-and-test:
     name: Build (amd64) + integration test against local registry
-    # Skip on forked PRs — required C8Y_* secrets aren't available there.
+    # Skip on PRs coming from an external fork — required C8Y_* secrets aren't
+    # available there. Same-repo PRs (including from a branch in this repo
+    # back to its own main) still run.
     if: >-
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.fork == false
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     # Local Docker registry on the runner. We push the freshly built CI
     # image here and pull it from docker compose during the test, so no
