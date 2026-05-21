@@ -59,13 +59,23 @@ runs:
           https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/startOPCDemoContainer.sh \
           -O startOPCDemoContainer.sh
 
-        # Single deliberate patch: replace the gateway compose URL with our
-        # locally patched file (so the freshly built CI image is used). The
-        # rest of the script runs verbatim — software names, device-type
-        # creation, install steps, cleanup, etc. all stay upstream.
+        # Patch 1: replace the gateway compose URL with our locally patched
+        # file, so the freshly built CI image is used.
         sed -i \
           's|--url https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml|--file ./patched-gateway-compose.yml|' \
           startOPCDemoContainer.sh
+
+        # Patch 2: suffix the two shared software names with the run-scoped
+        # DEVICE_NAME so concurrent CI runs cannot collide on the c8y software
+        # repository, and so the cleanup step can delete exactly the entries
+        # this run created without touching any pre-existing demo software.
+        sed -i \
+          -e "s|opcua-server|opcua-server-${DEVICE_NAME}|g" \
+          -e "s|opcua-device-gateway|opcua-device-gateway-${DEVICE_NAME}|g" \
+          startOPCDemoContainer.sh
+
+        echo "--- patched startOPCDemoContainer.sh (head) ---"
+        head -60 startOPCDemoContainer.sh
 
     - name: Run startOPCDemoContainer.sh
       # Two notes:
@@ -107,9 +117,15 @@ runs:
         # Stop the local docker compose stack
         c8y tedge demo stop "$DEVICE_NAME" -n || true
 
-        # Note: shared software entries (`opcua-server`, `opcua-device-gateway`)
-        # are intentionally NOT deleted — the upstream script reuses them
-        # across runs via its idempotent `if [ -z "$(c8y software find ...)" ]`
-        # guards. Deleting them would only force a re-create on the next run.
+        # Delete the run-scoped software entries we created. Names match the
+        # sed patch above (`<name>-${DEVICE_NAME}`) so this only ever touches
+        # entries owned by this run.
+        for SW in "opcua-server-${DEVICE_NAME}" "opcua-device-gateway-${DEVICE_NAME}"; do
+          c8y software find -n --name "$SW" 2>/dev/null \
+            | jq -r '.id // empty' \
+            | while read -r ID; do
+                [ -n "$ID" ] && c8y software delete -n --id "$ID" --forceCascade || true
+              done
+        done
 
         echo "--- Cleanup done ---"
