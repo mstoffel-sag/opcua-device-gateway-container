@@ -80,13 +80,24 @@ runs:
 
         sudo tedge cert create --device-id "$DEVICE_NAME"
 
-        # tedge cert upload c8y reads the password from stdin when --user is set.
-        printf '%s' "$C8Y_PASSWORD" | sudo tedge cert upload c8y --user "$C8Y_USER"
+        # `tedge cert upload c8y` requires an interactive TTY (rpassword
+        # crate, no stdin password support). Upload the certificate directly
+        # via the Cumulocity REST API using go-c8y-cli, which is already
+        # authenticated from C8Y_HOST / C8Y_USER / C8Y_PASSWORD.
+        TENANT=$(c8y currenttenant get -n --select name -o csv)
+        sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
+          | jq -Rs --arg name "$DEVICE_NAME" \
+              '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}' \
+          > /tmp/cert-payload.json
+        c8y api -n POST "/tenant/trusted-certificates/${TENANT}" --data "@/tmp/cert-payload.json"
+        rm -f /tmp/cert-payload.json
+        echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
 
         sudo tedge connect c8y
 
         # Capture cert fingerprint for cleanup later.
-        FP=$(sudo tedge cert show 2>/dev/null | awk -F': *' '/Thumbprint|Fingerprint/ {print tolower($2); exit}')
+        FP=$(sudo tedge cert show 2>/dev/null \
+          | awk -F': *' '/Thumbprint|Fingerprint/ {print tolower($2); exit}')
         echo "TEDGE_CERT_FP=$FP" >> "$GITHUB_ENV"
 
     - name: Write combined docker-compose.yml
@@ -222,14 +233,11 @@ runs:
         fi
 
         echo "--- delete trusted certificate from Cumulocity ---"
-        if [ -n "$TEDGE_CERT_FP" ]; then
-          TENANT_ID=$(c8y currenttenant get -n 2>/dev/null | jq -r '.name // empty')
-          if [ -n "$TENANT_ID" ]; then
-            echo "  removing trusted cert fingerprint $TEDGE_CERT_FP from tenant $TENANT_ID..."
-            c8y api -n DELETE "/tenant/trusted-certificates/$TENANT_ID/$TEDGE_CERT_FP" \
-              && echo "    deleted." \
-              || echo "::warning::failed to delete trusted certificate $TEDGE_CERT_FP"
-          fi
+        if [ -n "$TEDGE_CERT_FP" ] && [ -n "$TEDGE_TENANT" ]; then
+          echo "  removing trusted cert fingerprint $TEDGE_CERT_FP from tenant $TEDGE_TENANT..."
+          c8y api -n DELETE "/tenant/trusted-certificates/$TEDGE_TENANT/$TEDGE_CERT_FP" \
+            && echo "    deleted." \
+            || echo "::warning::failed to delete trusted certificate $TEDGE_CERT_FP"
         fi
 
         echo "--- remove local tedge cert and state ---"
