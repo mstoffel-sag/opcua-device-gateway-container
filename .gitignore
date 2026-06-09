@@ -1,2 +1,9 @@
 opcua-device-gateway.tar.gz
 *.tar.gz
+
+# macOS Finder metadata
+.DS_Store
+
+# Ad-hoc scratch files (local PR/CI investigation dumps)
+pr_*.json
+pr_*.txt
