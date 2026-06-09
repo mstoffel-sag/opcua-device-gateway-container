@@ -69,7 +69,7 @@ runs:
         fi
         tedge --version
 
-    - name: Configure and connect thin-edge.io to Cumulocity
+    - name: Register device with Cumulocity CA and connect thin-edge.io
       shell: bash
       run: |
         set -e
@@ -78,28 +78,29 @@ runs:
         sudo tedge config set mqtt.bind.address 0.0.0.0
         sudo tedge config set c8y.url "$C8Y_HOST_PLAIN"
 
-        sudo tedge cert create --device-id "$DEVICE_NAME"
+        # Make sure the tenant Certificate Authority feature is enabled and
+        # a CA certificate exists. Both calls are idempotent on a tenant that
+        # already has them set up.
+        c8y features enable -n --key certificate-authority || true
+        c8y devicemanagement certificate-authority create -n || true
 
-        # `tedge cert upload c8y` requires an interactive TTY (rpassword
-        # crate, no stdin password support). Upload the certificate directly
-        # via the Cumulocity REST API using go-c8y-cli, which is already
-        # authenticated from C8Y_HOST / C8Y_USER / C8Y_PASSWORD.
-        TENANT=$(c8y currenttenant get -n --select name -o csv)
-        PAYLOAD=$(sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
-          | jq -Rs --arg name "$DEVICE_NAME" \
-              '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}')
-        c8y api -n POST "/tenant/tenants/${TENANT}/trusted-certificates" \
-          --data "$PAYLOAD" \
-          --contentType "application/json" \
-          --accept "application/json"
-        echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
+        # Generate a one-time password and create a CA-based device
+        # registration. The device then downloads a CA-signed certificate;
+        # no per-device trusted-certificate upload is required because the
+        # tenant trusts everything signed by its own CA.
+        OTP=$(openssl rand -hex 12)
+        c8y deviceregistration register-ca -n \
+          --id "$DEVICE_NAME" \
+          --one-time-password "$OTP"
+
+        sudo tedge cert download c8y \
+          --device-id "$DEVICE_NAME" \
+          --one-time-password "$OTP"
 
         sudo tedge connect c8y
 
-        # Capture cert fingerprint for cleanup later.
-        FP=$(sudo tedge cert show 2>/dev/null \
-          | awk -F': *' '/Thumbprint|Fingerprint/ {print tolower($2); exit}')
-        echo "TEDGE_CERT_FP=$FP" >> "$GITHUB_ENV"
+        TENANT=$(c8y currenttenant get -n --select name -o csv)
+        echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
 
     - name: Write combined docker-compose.yml
       shell: bash
@@ -179,6 +180,7 @@ runs:
         OPCSERVER_DEVICE_ID=$(
           wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/opcserver.json \
             | sed "s/###OWNER###/$OWNER/g" \
+            | jq -c . \
             | c8y inventory children create -n -f --id "$GATEWAY_ID" --childType device --global --template input.value \
             | jq -r .id
         )
@@ -187,6 +189,7 @@ runs:
         echo "Creating Pump01 device protocol..."
         wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/device-protocols/opcua-pump-device-protocol.json \
           | sed "s/###OPCSERVER_DEVICE_ID###/$OPCSERVER_DEVICE_ID/g" \
+          | jq -c . \
           | c8y inventory create -n -f --name Pump01 --type c8y_OpcuaDeviceType --template input.value
 
     - name: Verify Pump01 device was created
@@ -231,14 +234,6 @@ runs:
             || echo "::warning::failed to delete device $EXT_ID"
         else
           echo "  no device found with externalId $DEVICE_NAME"
-        fi
-
-        echo "--- delete trusted certificate from Cumulocity ---"
-        if [ -n "$TEDGE_CERT_FP" ] && [ -n "$TEDGE_TENANT" ]; then
-          echo "  removing trusted cert fingerprint $TEDGE_CERT_FP from tenant $TEDGE_TENANT..."
-          c8y api -n DELETE "/tenant/tenants/$TEDGE_TENANT/trusted-certificates/$TEDGE_CERT_FP" \
-            && echo "    deleted." \
-            || echo "::warning::failed to delete trusted certificate $TEDGE_CERT_FP"
         fi
 
         echo "--- remove local tedge cert and state ---"
