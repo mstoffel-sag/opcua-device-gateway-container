@@ -88,7 +88,9 @@ runs:
         sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
           | jq -Rs --arg name "$DEVICE_NAME" \
               '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}' \
-          | c8y api -n POST "/tenant/tenants/${TENANT}/trusted-certificates"
+          | c8y api -n POST "/tenant/tenants/${TENANT}/trusted-certificates" \
+              --contentType "application/json" \
+              --accept "application/json"
         echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
 
         sudo tedge connect c8y
