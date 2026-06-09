@@ -48,9 +48,14 @@ runs:
         echo "C8Y_HOST_PLAIN=${URL_HOST}" >> "$GITHUB_ENV"
         echo "C8Y_USER=${{ inputs.c8y_user }}" >> "$GITHUB_ENV"
         echo "C8Y_PASSWORD=${{ inputs.c8y_password }}" >> "$GITHUB_ENV"
-        # Device name must be a valid externalId — keep it short, unique
-        # per run+attempt, and clearly tagged as a CI artefact.
-        echo "DEVICE_NAME=ci-opcua-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+        # Run-specific tags so concurrent / repeated runs do not collide on
+        # tenant artefacts. The OPCSERVER hostname must be valid Docker DNS
+        # (lowercase, hyphenated).
+        RUN_TAG="${{ github.run_id }}-${{ github.run_attempt }}"
+        echo "DEVICE_NAME=ci-opcua-${RUN_TAG}" >> "$GITHUB_ENV"
+        echo "OPCSERVER_HOST=opcserver-${RUN_TAG}" >> "$GITHUB_ENV"
+        echo "OPCSERVER_NAME=OPCSERVER-${RUN_TAG}" >> "$GITHUB_ENV"
+        echo "PROTOCOL_NAME=OpcuaPumpProtocol-${RUN_TAG}" >> "$GITHUB_ENV"
         echo "C8Y_SETTINGS_SESSION_MODE=dev" >> "$GITHUB_ENV"
 
     - name: Install go-c8y-cli
@@ -111,13 +116,14 @@ runs:
         services:
           opcserver:
             image: ghcr.io/thin-edge/opc-ua-demo-server:latest
-            container_name: opcserver
+            container_name: ${OPCSERVER_HOST}
+            hostname: ${OPCSERVER_HOST}
             restart: always
             networks: [backend]
 
           gateway:
             image: ${GATEWAY_IMAGE}
-            container_name: opc-device-gateway
+            container_name: opc-device-gateway-${{ github.run_id }}-${{ github.run_attempt }}
             restart: always
             depends_on: [opcserver]
             extra_hosts:
@@ -141,7 +147,7 @@ runs:
 
         networks:
           backend:
-            name: opc-ua-gateway_backend
+            name: opc-ua-gateway_backend-${{ github.run_id }}-${{ github.run_attempt }}
         EOF
         echo "--- docker-compose.yml ---"
         cat docker-compose.yml
@@ -153,8 +159,10 @@ runs:
         sleep 5
         docker compose ps
 
-    - name: Wait for OPCUAGateway, register OPCSERVER, create Pump01 protocol
+    - name: Wait for OPCUAGateway, register OPCSERVER, create device protocol
       shell: bash
+      env:
+        TEMPLATES_DIR: ${{ github.action_path }}/templates
       run: |
         set -e
         OWNER="device_${DEVICE_NAME}"
@@ -176,10 +184,12 @@ runs:
           exit 1
         fi
 
-        echo "Registering OPCSERVER as a child device of OPCUAGateway..."
+        echo "Registering $OPCSERVER_NAME as a child device of OPCUAGateway..."
         OPCSERVER_JSON=$(
-          wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/opcserver.json \
-            | sed "s/###OWNER###/$OWNER/g" \
+          sed -e "s/###OWNER###/${OWNER}/g" \
+              -e "s/###OPCSERVER_NAME###/${OPCSERVER_NAME}/g" \
+              -e "s/###OPCSERVER_HOST###/${OPCSERVER_HOST}/g" \
+              "${TEMPLATES_DIR}/opcserver.json" \
             | jq -c .
         )
         OPCSERVER_DEVICE_ID=$(
@@ -190,35 +200,64 @@ runs:
             --data "$OPCSERVER_JSON" \
           | jq -r .id
         )
-        echo "  OPCSERVER id: $OPCSERVER_DEVICE_ID"
+        echo "  $OPCSERVER_NAME id: $OPCSERVER_DEVICE_ID"
+        echo "OPCSERVER_DEVICE_ID=$OPCSERVER_DEVICE_ID" >> "$GITHUB_ENV"
 
-        echo "Creating Pump01 device protocol..."
+        echo "Creating $PROTOCOL_NAME device protocol..."
         PUMP_JSON=$(
-          wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/device-protocols/opcua-pump-device-protocol.json \
-            | sed "s/###OPCSERVER_DEVICE_ID###/$OPCSERVER_DEVICE_ID/g" \
+          sed -e "s/###OPCSERVER_DEVICE_ID###/${OPCSERVER_DEVICE_ID}/g" \
+              -e "s/###PROTOCOL_NAME###/${PROTOCOL_NAME}/g" \
+              "${TEMPLATES_DIR}/opcua-pump-device-protocol.json" \
             | jq -c .
         )
         c8y inventory create -n -f \
-          --name Pump01 \
+          --name "$PROTOCOL_NAME" \
           --type c8y_OpcuaDeviceType \
           --data "$PUMP_JSON"
 
-    - name: Verify Pump01 device was created
+    - name: Verify Pump01 device was created and measurements arrive
       shell: bash
       run: |
+        set -e
+        OWNER="device_${DEVICE_NAME}"
+
+        echo "Waiting for Pump01 c8y_OpcuaDevice owned by $OWNER..."
+        PUMP_ID=""
         for i in $(seq 1 60); do
           PUMP_ID=$(c8y inventory list -n \
             --type c8y_OpcuaDevice \
-            --owner "device_${DEVICE_NAME}" 2>/dev/null \
+            --owner "$OWNER" 2>/dev/null \
             | jq -r '.id // empty' | head -1)
           if [ -n "$PUMP_ID" ] && [ "$PUMP_ID" != "null" ]; then
-            echo "Test PASSED — Pump01 device id: $PUMP_ID"
-            exit 0
+            echo "  Pump01 device created: id=$PUMP_ID"
+            break
           fi
-          echo "Pump01 not yet created (attempt $i)..."
+          echo "  not yet (attempt $i)..."
           sleep 5
         done
-        echo "::error::Pump01 device was not created"
+        if [ -z "$PUMP_ID" ] || [ "$PUMP_ID" = "null" ]; then
+          echo "::error::Pump01 c8y_OpcuaDevice was not created"
+          docker compose logs gateway | tail -200
+          exit 1
+        fi
+
+        echo "Waiting for measurements on Pump01 ($PUMP_ID)..."
+        DATE_FROM=$(date -u -d '10 minutes ago' '+%Y-%m-%dT%H:%M:%SZ')
+        for i in $(seq 1 60); do
+          MEAS=$(c8y measurements list -n \
+            --device "$PUMP_ID" \
+            --dateFrom "$DATE_FROM" \
+            --pageSize 1 2>/dev/null \
+            | jq -r '.id // empty' | head -1)
+          if [ -n "$MEAS" ] && [ "$MEAS" != "null" ]; then
+            echo "  Measurement received: id=$MEAS"
+            echo "Test PASSED — Pump01 id=$PUMP_ID, measurements arriving."
+            exit 0
+          fi
+          echo "  no measurements yet (attempt $i)..."
+          sleep 5
+        done
+        echo "::error::No measurements arrived on Pump01 within timeout"
         docker compose logs gateway | tail -200
         exit 1
 
@@ -245,6 +284,21 @@ runs:
             || echo "::warning::failed to delete device $EXT_ID"
         else
           echo "  no device found with externalId $DEVICE_NAME"
+        fi
+
+        echo "--- delete device protocol from Cumulocity ---"
+        # The c8y_OpcuaDeviceType MO is standalone (not a child of the device),
+        # so cascade-delete does not catch it.
+        if [ -n "$PROTOCOL_NAME" ]; then
+          PROTO_ID=$(c8y inventory find -n --query "name eq '$PROTOCOL_NAME' and type eq 'c8y_OpcuaDeviceType'" 2>/dev/null \
+            | jq -r '.id // empty' | head -1)
+          if [ -n "$PROTO_ID" ] && [ "$PROTO_ID" != "null" ]; then
+            echo "  deleting device protocol $PROTOCOL_NAME (mo id $PROTO_ID)..."
+            c8y inventory delete -n --id "$PROTO_ID" && echo "    deleted." \
+              || echo "::warning::failed to delete device protocol $PROTO_ID"
+          else
+            echo "  no device protocol found with name $PROTOCOL_NAME"
+          fi
         fi
 
         echo "--- remove local tedge cert and state ---"
