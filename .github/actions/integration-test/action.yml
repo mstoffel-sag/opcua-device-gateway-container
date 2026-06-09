@@ -88,7 +88,7 @@ runs:
         sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
           | jq -Rs --arg name "$DEVICE_NAME" \
               '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}' \
-          | c8y api -n POST "/tenant/trusted-certificates/${TENANT}"
+          | c8y api -n POST "/tenant/tenants/${TENANT}/trusted-certificates"
         echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
 
         sudo tedge connect c8y
@@ -233,7 +233,7 @@ runs:
         echo "--- delete trusted certificate from Cumulocity ---"
         if [ -n "$TEDGE_CERT_FP" ] && [ -n "$TEDGE_TENANT" ]; then
           echo "  removing trusted cert fingerprint $TEDGE_CERT_FP from tenant $TEDGE_TENANT..."
-          c8y api -n DELETE "/tenant/trusted-certificates/$TEDGE_TENANT/$TEDGE_CERT_FP" \
+          c8y api -n DELETE "/tenant/tenants/$TEDGE_TENANT/trusted-certificates/$TEDGE_CERT_FP" \
             && echo "    deleted." \
             || echo "::warning::failed to delete trusted certificate $TEDGE_CERT_FP"
         fi
