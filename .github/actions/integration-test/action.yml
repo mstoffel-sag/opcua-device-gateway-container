@@ -1,16 +1,30 @@
 name: Integration test
 description: >
   Runs the OPC-UA device gateway integration test against a given image
-  reference. The image must already be available to the runner (either pulled
-  from a remote registry, present in the local Docker daemon, or pullable from
-  a localhost registry service container).
+  reference.
+
+  Approach: install thin-edge.io directly on the runner, connect it to a
+  Cumulocity tenant, then start a single docker-compose stack containing
+  the OPC-UA demo server (`ghcr.io/thin-edge/opc-ua-demo-server:latest`)
+  and the gateway image under test. The gateway uses host.docker.internal
+  to reach the runner's thin-edge MQTT broker. We then register the demo
+  OPC server as a child device of OPCUAGateway, create the Pump01 device
+  protocol, and verify that the corresponding `c8y_OpcuaDevice` managed
+  object appears in Cumulocity.
+
+  No `c8y tedge demo`, no software-repository round-trip, no upstream
+  script.
 
 inputs:
   image:
-    description: Full image ref to test (e.g. localhost:5000/opcua-device-gateway:1.2.3-tedge2.0.1)
+    description: Full image ref of the gateway image to test
     required: true
+  tedge_version:
+    description: thin-edge.io version to install on the runner (matches the version baked into the image)
+    required: false
+    default: ''
   c8y_host:
-    description: Cumulocity host
+    description: Cumulocity host (with or without scheme)
     required: true
   c8y_user:
     description: Cumulocity user
@@ -25,119 +39,200 @@ runs:
     - name: Configure environment
       shell: bash
       run: |
-        echo "C8Y_HOST=${{ inputs.c8y_host }}" >> "$GITHUB_ENV"
+        # Strip scheme from C8Y_HOST so tedge config get / set both work.
+        URL_HOST="${{ inputs.c8y_host }}"
+        URL_HOST="${URL_HOST#https://}"
+        URL_HOST="${URL_HOST#http://}"
+        URL_HOST="${URL_HOST%/}"
+        echo "C8Y_HOST=https://${URL_HOST}" >> "$GITHUB_ENV"
+        echo "C8Y_HOST_PLAIN=${URL_HOST}" >> "$GITHUB_ENV"
         echo "C8Y_USER=${{ inputs.c8y_user }}" >> "$GITHUB_ENV"
         echo "C8Y_PASSWORD=${{ inputs.c8y_password }}" >> "$GITHUB_ENV"
-        echo "DEVICE_NAME=test-opcua-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
+        # Device name must be a valid externalId — keep it short, unique
+        # per run+attempt, and clearly tagged as a CI artefact.
+        echo "DEVICE_NAME=ci-opcua-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
         echo "C8Y_SETTINGS_SESSION_MODE=dev" >> "$GITHUB_ENV"
 
     - name: Install go-c8y-cli
       uses: reubenmiller/setup-go-c8y-cli@v2
 
-    - name: Install c8y-tedge extension
+    - name: Install thin-edge.io on the runner
       shell: bash
-      run: c8y extension install thin-edge/c8y-tedge -n
+      env:
+        TEDGE_VERSION: ${{ inputs.tedge_version }}
+      run: |
+        set -e
+        if [ -n "$TEDGE_VERSION" ]; then
+          curl -fsSL https://thin-edge.io/install.sh | sudo sh -s -- "$TEDGE_VERSION"
+        else
+          curl -fsSL https://thin-edge.io/install.sh | sudo sh -s --
+        fi
+        tedge --version
 
-    - name: Download upstream compose and patch image
+    - name: Configure and connect thin-edge.io to Cumulocity
       shell: bash
       run: |
-        wget -q \
-          https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml \
-          -O patched-gateway-compose.yml
+        set -e
+        # Listen on all interfaces so the gateway container can reach the
+        # runner's mosquitto via host.docker.internal:1883.
+        sudo tedge config set mqtt.bind.address 0.0.0.0
+        sudo tedge config set c8y.url "$C8Y_HOST_PLAIN"
 
-        sed -i \
-          "s|image: ghcr.io/.*/opcua-device-gateway:.*|image: ${{ inputs.image }}|" \
-          patched-gateway-compose.yml
+        sudo tedge cert create --device-id "$DEVICE_NAME"
 
-        echo "--- patched compose ---"
-        cat patched-gateway-compose.yml
+        # tedge cert upload c8y reads the password from stdin when --user is set.
+        printf '%s' "$C8Y_PASSWORD" | sudo tedge cert upload c8y --user "$C8Y_USER"
 
-    - name: Download and patch startOPCDemoContainer.sh
+        sudo tedge connect c8y
+
+        # Capture cert fingerprint for cleanup later.
+        FP=$(sudo tedge cert show 2>/dev/null | awk -F': *' '/Thumbprint|Fingerprint/ {print tolower($2); exit}')
+        echo "TEDGE_CERT_FP=$FP" >> "$GITHUB_ENV"
+
+    - name: Write combined docker-compose.yml
+      shell: bash
+      env:
+        GATEWAY_IMAGE: ${{ inputs.image }}
+      run: |
+        cat > docker-compose.yml <<EOF
+        services:
+          opcserver:
+            image: ghcr.io/thin-edge/opc-ua-demo-server:latest
+            container_name: opcserver
+            restart: always
+            networks: [backend]
+
+          gateway:
+            image: ${GATEWAY_IMAGE}
+            container_name: opc-device-gateway
+            restart: always
+            depends_on: [opcserver]
+            extra_hosts:
+              - host.docker.internal:host-gateway
+            environment:
+              - GATEWAY_IDENTIFIER=OPCUAGateway
+              - GATEWAY_NAME=OPCUAGateway
+              - GATEWAY_THINEDGE_MQTTSERVERURL=tcp://host.docker.internal:1883
+              - GATEWAY_THINEDGE_USEFORDATAFORWARDING=true
+              - GATEWAY_THINEDGE_ENABLED=true
+              - GATEWAY_MAPPINGS_MERGECYCLICREAD=false
+              - GATEWAY_MONITORING_INTERVAL=3600000
+            volumes:
+              - opcua_data:/app/data
+              - /etc/tedge:/etc/tedge
+              - /etc/tedge/device-certs:/etc/tedge/device-certs
+            networks: [backend]
+
+        volumes:
+          opcua_data:
+
+        networks:
+          backend:
+            name: opc-ua-gateway_backend
+        EOF
+        echo "--- docker-compose.yml ---"
+        cat docker-compose.yml
+
+    - name: Start docker-compose stack
       shell: bash
       run: |
-        wget -q \
-          https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/startOPCDemoContainer.sh \
-          -O startOPCDemoContainer.sh
+        docker compose up -d
+        sleep 5
+        docker compose ps
 
-        # Patch 1: replace the gateway compose URL with our locally patched
-        # file, so the freshly built CI image is used.
-        sed -i \
-          's|--url https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/software/docker-compose-opcua-device-gateway-demo-container.yml|--file ./patched-gateway-compose.yml|' \
-          startOPCDemoContainer.sh
-
-        # Patch 2: suffix the two shared software names with the run-scoped
-        # DEVICE_NAME so concurrent CI runs cannot collide on the c8y software
-        # repository, and so the cleanup step can delete exactly the entries
-        # this run created without touching any pre-existing demo software.
-        sed -i \
-          -e "s|opcua-server|opcua-server-${DEVICE_NAME}|g" \
-          -e "s|opcua-device-gateway|opcua-device-gateway-${DEVICE_NAME}|g" \
-          startOPCDemoContainer.sh
-
-        echo "--- patched startOPCDemoContainer.sh (head) ---"
-        head -60 startOPCDemoContainer.sh
-
-    - name: Run startOPCDemoContainer.sh
-      # Two notes:
-      # - Stdin is redirected from /dev/null so go-c8y-cli does not see the
-      #   GitHub Actions stdin FIFO as "empty piped input" (which causes the
-      #   `c8y inventory find` / `c8y software find` calls in the upstream
-      #   script to silently no-op with exit codes 3/100). The script's
-      #   internal pipes between c8y calls are unaffected.
-      # - The upstream script has a trailing buggy `sed` after Pump01
-      #   creation that exits non-zero even on success — the Verify step
-      #   below is the source of truth.
-      shell: bash
-      continue-on-error: true
-      run: sh startOPCDemoContainer.sh "$DEVICE_NAME" < /dev/null
-
-    - name: Verify Pump01 device was created (test passed)
+    - name: Wait for OPCUAGateway, register OPCSERVER, create Pump01 protocol
       shell: bash
       run: |
-        PUMP_ID=$(c8y inventory list -n \
-          --type c8y_OpcuaDevice \
-          --owner "device_$DEVICE_NAME" 2>/dev/null | jq -r '.id // empty')
-        if [ -z "$PUMP_ID" ]; then
-          echo "::error::Pump01 device not found — test FAILED"
+        set -e
+        OWNER="device_${DEVICE_NAME}"
+
+        echo "Waiting for OPCUAGateway managed object owned by $OWNER..."
+        GATEWAY_ID=""
+        for i in $(seq 1 60); do
+          GATEWAY_ID=$(c8y inventory find -n --name OPCUAGateway --owner "$OWNER" 2>/dev/null | jq -r '.id // empty' | head -1)
+          if [ -n "$GATEWAY_ID" ] && [ "$GATEWAY_ID" != "null" ]; then
+            echo "  OPCUAGateway found: id=$GATEWAY_ID"
+            break
+          fi
+          echo "  not yet (attempt $i)..."
+          sleep 5
+        done
+        if [ -z "$GATEWAY_ID" ] || [ "$GATEWAY_ID" = "null" ]; then
+          echo "::error::OPCUAGateway never appeared in Cumulocity"
+          docker compose logs gateway | tail -100
           exit 1
         fi
-        echo "Test PASSED — Pump01 device found: $PUMP_ID"
 
-    - name: Cleanup — delete tenant artefacts and stop containers
+        echo "Registering OPCSERVER as a child device of OPCUAGateway..."
+        OPCSERVER_DEVICE_ID=$(
+          wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/opcserver.json \
+            | sed "s/###OWNER###/$OWNER/g" \
+            | c8y inventory children create -n -f --id "$GATEWAY_ID" --childType device --global --template input.value \
+            | jq -r .id
+        )
+        echo "  OPCSERVER id: $OPCSERVER_DEVICE_ID"
+
+        echo "Creating Pump01 device protocol..."
+        wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/device-protocols/opcua-pump-device-protocol.json \
+          | sed "s/###OPCSERVER_DEVICE_ID###/$OPCSERVER_DEVICE_ID/g" \
+          | c8y inventory create -n -f --name Pump01 --type c8y_OpcuaDeviceType --template input.value
+
+    - name: Verify Pump01 device was created
+      shell: bash
+      run: |
+        for i in $(seq 1 60); do
+          PUMP_ID=$(c8y inventory list -n \
+            --type c8y_OpcuaDevice \
+            --owner "device_${DEVICE_NAME}" 2>/dev/null \
+            | jq -r '.id // empty' | head -1)
+          if [ -n "$PUMP_ID" ] && [ "$PUMP_ID" != "null" ]; then
+            echo "Test PASSED — Pump01 device id: $PUMP_ID"
+            exit 0
+          fi
+          echo "Pump01 not yet created (attempt $i)..."
+          sleep 5
+        done
+        echo "::error::Pump01 device was not created"
+        docker compose logs gateway | tail -200
+        exit 1
+
+    - name: Cleanup — disconnect tedge, delete tenant artefacts, stop containers
       if: always()
       shell: bash
       run: |
         set +e
-        echo "--- Cleanup for $DEVICE_NAME ---"
+        echo "--- gateway logs (tail) ---"
+        docker compose logs gateway 2>&1 | tail -50
 
-        # Removes the tedge device, its child devices (Pump01), and the
-        # trusted device certificate in one shot. Also stops the local
-        # docker compose stack.
-        c8y tedge demo delete "$DEVICE_NAME" -n || true
-        c8y tedge demo stop "$DEVICE_NAME" -n || true
+        echo "--- docker compose down ---"
+        docker compose down -v --remove-orphans || true
 
-        # Delete the run-scoped software entries we created. Names match the
-        # sed patch above (`<name>-${DEVICE_NAME}`) so this only ever touches
-        # entries owned by this run. We use `c8y software list` (not `find`,
-        # which is a c8y-tedge alias whose output format we cannot rely on
-        # across versions) and iterate with a here-string so the delete loop
-        # runs in the parent shell (jq | while pipes the loop into a subshell
-        # that swallows errors silently).
-        for SW in "opcua-server-${DEVICE_NAME}" "opcua-device-gateway-${DEVICE_NAME}"; do
-          echo "Looking up software '$SW'..."
-          IDS=$(c8y software list -n --name "$SW" --pageSize 100 \
-            | jq -r '.id // empty')
-          if [ -z "$IDS" ]; then
-            echo "  no software entry found for '$SW'"
-            continue
-          fi
-          while read -r ID; do
-            [ -z "$ID" ] && continue
-            echo "  deleting software '$SW' (id $ID)..."
-            c8y software delete -n --id "$ID" --forceCascade \
+        echo "--- tedge disconnect ---"
+        sudo tedge disconnect c8y || true
+
+        echo "--- delete device from Cumulocity ---"
+        # Resolve external id -> internal id and cascade-delete.
+        EXT_ID=$(c8y identity get -n --type c8y_Serial --name "$DEVICE_NAME" 2>/dev/null | jq -r '.managedObject.id // empty')
+        if [ -n "$EXT_ID" ] && [ "$EXT_ID" != "null" ]; then
+          echo "  deleting device $DEVICE_NAME (mo id $EXT_ID)..."
+          c8y devices delete -n --id "$EXT_ID" --cascade && echo "    deleted." \
+            || echo "::warning::failed to delete device $EXT_ID"
+        else
+          echo "  no device found with externalId $DEVICE_NAME"
+        fi
+
+        echo "--- delete trusted certificate from Cumulocity ---"
+        if [ -n "$TEDGE_CERT_FP" ]; then
+          TENANT_ID=$(c8y currenttenant get -n 2>/dev/null | jq -r '.name // empty')
+          if [ -n "$TENANT_ID" ]; then
+            echo "  removing trusted cert fingerprint $TEDGE_CERT_FP from tenant $TENANT_ID..."
+            c8y api -n DELETE "/tenant/trusted-certificates/$TENANT_ID/$TEDGE_CERT_FP" \
               && echo "    deleted." \
-              || echo "::warning::failed to delete software id $ID"
-          done <<< "$IDS"
-        done
+              || echo "::warning::failed to delete trusted certificate $TEDGE_CERT_FP"
+          fi
+        fi
+
+        echo "--- remove local tedge cert and state ---"
+        sudo rm -f /etc/tedge/device-certs/* || true
 
         echo "--- Cleanup done ---"
