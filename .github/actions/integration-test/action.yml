@@ -28,7 +28,7 @@ runs:
         echo "C8Y_HOST=${{ inputs.c8y_host }}" >> "$GITHUB_ENV"
         echo "C8Y_USER=${{ inputs.c8y_user }}" >> "$GITHUB_ENV"
         echo "C8Y_PASSWORD=${{ inputs.c8y_password }}" >> "$GITHUB_ENV"
-        echo "DEVICE_NAME=test-opcua-${{ github.run_id }}" >> "$GITHUB_ENV"
+        echo "DEVICE_NAME=test-opcua-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_ENV"
         echo "C8Y_SETTINGS_SESSION_MODE=dev" >> "$GITHUB_ENV"
 
     - name: Install go-c8y-cli
