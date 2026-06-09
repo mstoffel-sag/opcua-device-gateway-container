@@ -123,6 +123,10 @@ runs:
 
           gateway:
             image: ${GATEWAY_IMAGE}
+            # The CI gateway image is built locally on the runner with
+            # \`load: true\` and never pushed to a registry — make sure
+            # compose doesn't try to fetch it from one.
+            pull_policy: never
             container_name: opc-device-gateway-${{ github.run_id }}-${{ github.run_attempt }}
             restart: always
             depends_on: [opcserver]
