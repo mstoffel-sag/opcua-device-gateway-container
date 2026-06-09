@@ -130,6 +130,7 @@ jobs:
         uses: ./.github/actions/integration-test
         with:
           image: ${{ steps.versions.outputs.ci_image }}
+          tedge_version: ${{ steps.versions.outputs.tedge_version }}
           c8y_host: ${{ secrets.C8Y_HOST }}
           c8y_user: ${{ secrets.C8Y_USER }}
           c8y_password: ${{ secrets.C8Y_PASSWORD }}

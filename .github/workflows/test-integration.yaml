@@ -12,6 +12,10 @@ on:
         description: 'Full image ref to test (default: ghcr.io/<owner>/opcua-device-gateway:latest)'
         required: false
         type: string
+      tedge_version:
+        description: 'thin-edge.io version to install on the runner (leave empty for latest)'
+        required: false
+        type: string
 
 concurrency:
   group: opcua-gateway-ci
@@ -41,6 +45,7 @@ jobs:
         uses: ./.github/actions/integration-test
         with:
           image: ${{ steps.img.outputs.image }}
+          tedge_version: ${{ inputs.tedge_version }}
           c8y_host: ${{ secrets.C8Y_HOST }}
           c8y_user: ${{ secrets.C8Y_USER }}
           c8y_password: ${{ secrets.C8Y_PASSWORD }}
