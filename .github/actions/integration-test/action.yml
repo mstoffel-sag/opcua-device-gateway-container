@@ -85,15 +85,13 @@ runs:
         # via the Cumulocity REST API using go-c8y-cli, which is already
         # authenticated from C8Y_HOST / C8Y_USER / C8Y_PASSWORD.
         TENANT=$(c8y currenttenant get -n --select name -o csv)
-        sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
+        PAYLOAD=$(sudo cat /etc/tedge/device-certs/tedge-certificate.pem \
           | jq -Rs --arg name "$DEVICE_NAME" \
-              '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}' \
-          > /tmp/cert-payload.json
+              '{name: $name, status: "ENABLED", autoRegistrationEnabled: true, certInPemFormat: .}')
         c8y api -n POST "/tenant/tenants/${TENANT}/trusted-certificates" \
-          --file /tmp/cert-payload.json \
+          --data "$PAYLOAD" \
           --contentType "application/json" \
           --accept "application/json"
-        rm -f /tmp/cert-payload.json
         echo "TEDGE_TENANT=$TENANT" >> "$GITHUB_ENV"
 
         sudo tedge connect c8y
