@@ -177,20 +177,31 @@ runs:
         fi
 
         echo "Registering OPCSERVER as a child device of OPCUAGateway..."
-        OPCSERVER_DEVICE_ID=$(
+        OPCSERVER_JSON=$(
           wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/opcserver.json \
             | sed "s/###OWNER###/$OWNER/g" \
-            | jq -c . \
-            | c8y inventory children create -n -f --id "$GATEWAY_ID" --childType device --global --template input.value \
-            | jq -r .id
+            | jq -c .
+        )
+        OPCSERVER_DEVICE_ID=$(
+          c8y inventory children create -n -f \
+            --id "$GATEWAY_ID" \
+            --childType device \
+            --global \
+            --data "$OPCSERVER_JSON" \
+          | jq -r .id
         )
         echo "  OPCSERVER id: $OPCSERVER_DEVICE_ID"
 
         echo "Creating Pump01 device protocol..."
-        wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/device-protocols/opcua-pump-device-protocol.json \
-          | sed "s/###OPCSERVER_DEVICE_ID###/$OPCSERVER_DEVICE_ID/g" \
-          | jq -c . \
-          | c8y inventory create -n -f --name Pump01 --type c8y_OpcuaDeviceType --template input.value
+        PUMP_JSON=$(
+          wget -qO- https://raw.githubusercontent.com/thin-edge/opcua-solution-blueprint/refs/heads/main/device-protocols/opcua-pump-device-protocol.json \
+            | sed "s/###OPCSERVER_DEVICE_ID###/$OPCSERVER_DEVICE_ID/g" \
+            | jq -c .
+        )
+        c8y inventory create -n -f \
+          --name Pump01 \
+          --type c8y_OpcuaDeviceType \
+          --data "$PUMP_JSON"
 
     - name: Verify Pump01 device was created
       shell: bash
