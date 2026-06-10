@@ -280,11 +280,15 @@ runs:
         sudo tedge disconnect c8y || true
 
         echo "--- delete device from Cumulocity ---"
-        # Resolve external id -> internal id and cascade-delete.
+        # --cascade removes child devices (OPCUAGateway and its subtree) but
+        # does NOT delete the parent device itself in go-c8y-cli. Run it first
+        # to clear children, then delete the parent in a second call.
         EXT_ID=$(c8y identity get -n --type c8y_Serial --name "$DEVICE_NAME" 2>/dev/null | jq -r '.managedObject.id // empty')
         if [ -n "$EXT_ID" ] && [ "$EXT_ID" != "null" ]; then
+          echo "  cascade-deleting children of $DEVICE_NAME (mo id $EXT_ID)..."
+          c8y devices delete -n --id "$EXT_ID" --cascade || true
           echo "  deleting device $DEVICE_NAME (mo id $EXT_ID)..."
-          c8y devices delete -n --id "$EXT_ID" --cascade && echo "    deleted." \
+          c8y devices delete -n --id "$EXT_ID" && echo "    deleted." \
             || echo "::warning::failed to delete device $EXT_ID"
         else
           echo "  no device found with externalId $DEVICE_NAME"
