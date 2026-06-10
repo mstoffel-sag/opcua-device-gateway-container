@@ -33,7 +33,14 @@ RUN apt-get update \
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
-RUN wget -O - thin-edge.io/install.sh | sh -s -- ${TEDGE_VERSION} --minimal
+# Pass an explicit version when TEDGE_VERSION is set; fall back to the
+# latest release otherwise. Always add --minimal to skip the systemd/
+# service plumbing that doesn't apply inside a container.
+RUN if [ -n "${TEDGE_VERSION}" ]; then \
+      wget -O - thin-edge.io/install.sh | sh -s -- "${TEDGE_VERSION}" --minimal; \
+    else \
+      wget -O - thin-edge.io/install.sh | sh -s -- --minimal; \
+    fi
 
 WORKDIR /app
 

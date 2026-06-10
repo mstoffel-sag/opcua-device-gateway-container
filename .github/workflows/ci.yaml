@@ -235,7 +235,7 @@ jobs:
       packages: write
     outputs:
       release_tag: ${{ steps.build.outputs.release_tag }}
-      image_ref:   ${{ steps.build.outputs.image_ref }}
+      image_ref:   ${{ steps.digest.outputs.image_ref }}
       version_tag: ${{ needs.check-versions.outputs.version_tag }}
     steps:
       - uses: actions/checkout@v4
@@ -254,15 +254,12 @@ jobs:
           SUFFIX="${DATE}-${SHORT_SHA}"
           VERSION_TAG="${{ needs.check-versions.outputs.version_tag }}"
           RELEASE_TAG="v${VERSION_TAG}-${SUFFIX}"
-          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/opcua-device-gateway:${VERSION_TAG}-${SUFFIX}"
           {
             echo "suffix=$SUFFIX"
             echo "release_tag=$RELEASE_TAG"
-            echo "image_ref=$IMAGE_REF"
           } >> "$GITHUB_OUTPUT"
           echo "Immutable build suffix: $SUFFIX"
           echo "Release tag:            $RELEASE_TAG"
-          echo "Pinned image ref:       $IMAGE_REF"
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
@@ -283,6 +280,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push multi-arch image
+        id: push
         uses: docker/build-push-action@v5
         with:
           context: containers/opcua-device-gateway
@@ -295,6 +293,15 @@ jobs:
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
             VERSION=${{ needs.check-versions.outputs.opcua_version }}
             TEDGE_VERSION=${{ needs.check-versions.outputs.tedge_version }}
+
+      - name: Capture content-addressed image ref
+        id: digest
+        run: |
+          # Use the digest from the push step so the ref is truly immutable
+          # (a tag can be overwritten; a digest cannot).
+          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/opcua-device-gateway@${{ steps.push.outputs.digest }}"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "Pinned image ref: ${IMAGE_REF}"
 
       - name: Update tracked-versions.json (scheduled bumps only)
         if: github.event_name == 'schedule' && needs.check-versions.outputs.version_changed == 'true'
