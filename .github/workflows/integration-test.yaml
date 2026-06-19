@@ -1,0 +1,98 @@
+name: integration-test
+
+# Build the gateway image locally and run the end-to-end integration test
+# against a Cumulocity tenant. Runs on every PR to main (and on merge-queue
+# entries) and is the required status check that gates merging — including the
+# auto-merge of the version-bump PRs opened by check-versions.yaml.
+#
+# Versions come straight from tracked-versions.json on the PR branch, so a bump
+# PR is tested against the exact versions it proposes.
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'docs/**'
+  # Run on merge-queue entries so the queue can land PRs.
+  merge_group:
+
+# Per-PR concurrency so successive pushes to the same PR cancel in-flight runs;
+# each merge-queue entry gets its own ref and so runs without cancelling others.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('integration-test-pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  integration-test:
+    name: Build amd64 image locally + integration test
+    # Skip PRs from forks — they have no access to the Cumulocity secrets.
+    # (merge_group has no pull_request context, so it always runs.)
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    env:
+      BUILDX_NO_DEFAULT_ATTESTATIONS: 1
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Resolve versions from tracked-versions.json
+        id: ver
+        run: |
+          OPCUA=$(jq -r '.opcua_version' tracked-versions.json)
+          TEDGE=$(jq -r '.tedge_version' tracked-versions.json)
+          echo "opcua=$OPCUA" >> "$GITHUB_OUTPUT"
+          echo "tedge=$TEDGE" >> "$GITHUB_OUTPUT"
+          echo "Building/testing against opcua=$OPCUA, tedge=$TEDGE"
+
+      - name: Compute local CI image tag
+        id: tag
+        run: |
+          # Plain (non-registry) tag — the image is only used by the local
+          # docker engine on this runner, never pushed.
+          CI_IMAGE="opcua-device-gateway:ci-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "ci_image=$CI_IMAGE" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta (local CI image)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: opcua-device-gateway
+          tags: type=raw,value=ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Build CI image locally (amd64 only, no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: containers/opcua-device-gateway
+          # Load the built image into the runner's docker engine so the
+          # integration test's docker-compose stack can use it without ever
+          # touching a registry.
+          load: true
+          push: false
+          # Single-arch is enough for CI: the runner can only execute amd64.
+          # The full multi-arch image is built in publish.yaml.
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+            VERSION=${{ steps.ver.outputs.opcua }}
+            TEDGE_VERSION=${{ steps.ver.outputs.tedge }}
+
+      - name: Run integration test
+        uses: ./.github/actions/integration-test
+        with:
+          image:         ${{ steps.tag.outputs.ci_image }}
+          tedge_version: ${{ steps.ver.outputs.tedge }}
+          c8y_host:      ${{ secrets.C8Y_BASEURL }}
+          c8y_user:      ${{ secrets.C8Y_USER }}
+          c8y_password:  ${{ secrets.C8Y_PASSWORD }}

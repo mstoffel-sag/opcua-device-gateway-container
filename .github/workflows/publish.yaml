@@ -1,50 +1,62 @@
 name: publish
 
+# Build the multi-arch image and push it to ghcr.io on every merge to main
+# (doc-only changes excluded). Versions come from tracked-versions.json.
+#
+# DISABLED for now: the job is gated `if: false`. main is already known-good
+# (the integration test is a required check on every PR), so re-enabling is just
+# a matter of dropping the `if: false` line.
+
 on:
-  workflow_dispatch:
-  pull_request:
   push:
-    tags:
-      - "*"
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  # Wait until all other publishing jobs are finished
-  # before publishing the virtual packages (which are architecture agnostic)
-  publish-containers:
-    name: ${{ matrix.target.image }} (${{ matrix.target.opcua_version }})
+  publish:
+    name: Publish multi-arch image to ghcr.io
+    # TODO(publish): re-enable by removing this line.
+    if: false
     runs-on: ubuntu-24.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          # Keep the "opcua-device-gateway" image on the latest available version
-          # which should align with the Cumulocity version used on the cloud trial tenants (e.g. eu-latest.cumulocity.com)
-
-          - opcua_version: "1023.1.1"
-            image: opcua-device-gateway
-
-          - opcua_version: "1023.1.1"
-            image: opcua-device-gateway-1023
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           lfs: true
-          fetch-depth: 0
-      - uses: extractions/setup-just@v2
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Setup Docker buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Resolve versions + compute tags
+        id: build
+        run: |
+          OPCUA=$(jq -r '.opcua_version' tracked-versions.json)
+          TEDGE=$(jq -r '.tedge_version' tracked-versions.json)
+          TEDGE_TAG=$(echo "$TEDGE" | sed 's/[~+]/-/g')
+          VERSION_TAG="${OPCUA}-tedge${TEDGE_TAG}"
+          DATE=$(date -u +%Y%m%d)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          SUFFIX="${DATE}-${SHORT_SHA}"
+          {
+            echo "opcua=$OPCUA"
+            echo "tedge=$TEDGE"
+            echo "version_tag=$VERSION_TAG"
+            echo "suffix=$SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version tag: $VERSION_TAG (build suffix: $SUFFIX)"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -54,21 +66,28 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            name=ghcr.io/${{ github.repository_owner }}/${{ matrix.target.image }},enable=true
+          images: ghcr.io/${{ github.repository_owner }}/opcua-device-gateway
           tags: |
-            type=raw,value={{tag}}
+            type=raw,value=${{ steps.build.outputs.version_tag }}
+            type=raw,value=${{ steps.build.outputs.version_tag }}-${{ steps.build.outputs.suffix }}
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push multi-arch image
+        id: push
         uses: docker/build-push-action@v5
         with:
           context: containers/opcua-device-gateway
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
-            VERSION=${{ matrix.target.opcua_version }}
+            VERSION=${{ steps.build.outputs.opcua }}
+            TEDGE_VERSION=${{ steps.build.outputs.tedge }}
+
+      - name: Log content-addressed image ref
+        run: |
+          # A tag can be overwritten; a digest cannot — log the immutable ref.
+          echo "Pinned image ref: ghcr.io/${{ github.repository_owner }}/opcua-device-gateway@${{ steps.push.outputs.digest }}"

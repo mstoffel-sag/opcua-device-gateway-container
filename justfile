@@ -1,12 +1,13 @@
 set dotenv-load
 
-export VERSION := env_var_or_default("VERSION", `date +'%Y%m%d.%H%M'`)
+# Combined version derived from tracked-versions.json: "<opcua>-tedge<tedge>"
+export VERSION := env_var_or_default("VERSION", `jq -r '"\(.opcua_version)-tedge\(.tedge_version | gsub("[~+]"; "-"))"' tracked-versions.json`)
 
 # Generate a version name (that can be used in follow up commands)
 generate_version:
     @echo "{{VERSION}}"
 
-# Trigger a release (by creating a tag)
+# Trigger a release (by creating a tag matching the image tag)
 release:
     git tag -a "{{VERSION}}" -m "{{VERSION}}"
     git push origin "{{VERSION}}"
