@@ -83,11 +83,11 @@ runs:
         sudo tedge config set mqtt.bind.address 0.0.0.0
         sudo tedge config set c8y.url "$C8Y_HOST_PLAIN"
 
-        # Make sure the tenant Certificate Authority feature is enabled and
-        # a CA certificate exists. Both calls are idempotent on a tenant that
-        # already has them set up.
-        c8y features enable -n --key certificate-authority || true
-        c8y devicemanagement certificate-authority create -n || true
+        # The tenant must already have the Certificate Authority feature
+        # enabled and a CA certificate provisioned. We do NOT enable it here:
+        # the least-privileged CI service user used on shared tenants has no
+        # permission to enable tenant features or create the CA — that is a
+        # one-time setup an admin performs out of band.
 
         # Generate a one-time password and create a CA-based device
         # registration. The device then downloads a CA-signed certificate;
