@@ -302,7 +302,7 @@ jobs:
         with:
           image:         ${{ steps.tag.outputs.ci_image }}
           tedge_version: ${{ needs.check-versions.outputs.tedge_version }}
-          c8y_host:      ${{ secrets.C8Y_HOST }}
+          c8y_host:      ${{ secrets.C8Y_BASEURL }}
           c8y_user:      ${{ secrets.C8Y_USER }}
           c8y_password:  ${{ secrets.C8Y_PASSWORD }}
 
