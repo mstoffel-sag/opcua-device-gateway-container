@@ -1,0 +1,153 @@
+name: check-versions
+
+# Probe upstream OPC-UA + thin-edge.io versions daily (or on demand). When they
+# drift past what tracked-versions.json records, open/update an auto-merging PR
+# that bumps tracked-versions.json. The integration-test workflow runs on that
+# PR; once it is green, auto-merge (or the merge queue) lands it on main.
+#
+# This workflow ONLY opens the bump PR — it never builds or tests. The bump PR
+# itself triggers integration-test.yaml like any other PR, and it is the only
+# PR that gets auto-merge turned on.
+
+on:
+  schedule:
+    # Daily probe for new upstream versions.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      opcua_version:
+        description: 'OPC-UA gateway version to bump to (default: latest upstream)'
+        required: false
+      tedge_version:
+        description: 'thin-edge.io version to bump to (default: latest upstream)'
+        required: false
+
+concurrency:
+  group: check-versions
+  cancel-in-progress: false
+
+jobs:
+  version-bump:
+    name: Probe upstream and open bump PR
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # COMMUNITY_ACTIONS_PAT (not GITHUB_TOKEN) so the PR this job opens
+          # triggers integration-test.yaml. PRs created with GITHUB_TOKEN do not
+          # trigger further workflow runs, which would leave the bump PR untested
+          # and auto-merge with nothing to wait on. Falls back to GITHUB_TOKEN.
+          token: ${{ secrets.COMMUNITY_ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Probe latest OPC-UA version
+        id: opcua
+        run: |
+          LATEST=$(curl -sf https://resources.cumulocity.com/examples/opc-ua/ \
+            | grep -oP '(?<=href=")[0-9]+\.[0-9]+\.[0-9]+(?=/)' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
+          if [ -z "$LATEST" ]; then
+            echo "::error::Failed to determine latest OPC-UA version"; exit 1
+          fi
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest OPC-UA version: $LATEST"
+
+      - name: Probe latest thin-edge.io version
+        id: tedge
+        run: |
+          # Cloudsmith holds the canonical Debian releases. Use the version
+          # string verbatim — releases publish clean semver (e.g. "1.6.0").
+          LATEST=$(curl -sf \
+            "https://api.cloudsmith.io/v1/packages/thinedge/tedge-release/?q=name%3Atedge+format%3Adeb+architecture%3Aamd64&page_size=10&sort=-date" \
+            | jq -r '[.[] | select(.name == "tedge")] | .[0].version')
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "::error::Failed to determine latest thin-edge.io version"; exit 1
+          fi
+          echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest thin-edge.io version: $LATEST"
+
+      - name: Decide target versions
+        id: decide
+        env:
+          INPUT_OPCUA:  ${{ inputs.opcua_version }}
+          INPUT_TEDGE:  ${{ inputs.tedge_version }}
+          LATEST_OPCUA: ${{ steps.opcua.outputs.version }}
+          LATEST_TEDGE: ${{ steps.tedge.outputs.version }}
+        run: |
+          set -e
+          TRACKED_OPCUA=$(jq -r '.opcua_version' tracked-versions.json)
+          TRACKED_TEDGE=$(jq -r '.tedge_version' tracked-versions.json)
+
+          # Manual dispatch overrides win; otherwise adopt the latest upstream.
+          OPCUA="${INPUT_OPCUA:-$LATEST_OPCUA}"
+          TEDGE="${INPUT_TEDGE:-$LATEST_TEDGE}"
+
+          if [ "$OPCUA" != "$TRACKED_OPCUA" ] || [ "$TEDGE" != "$TRACKED_TEDGE" ]; then
+            CHANGED=true
+          else
+            CHANGED=false
+          fi
+
+          TEDGE_TAG=$(echo "$TEDGE" | sed 's/[~+]/-/g')
+          VERSION_TAG="${OPCUA}-tedge${TEDGE_TAG}"
+
+          {
+            echo "opcua=$OPCUA"
+            echo "tedge=$TEDGE"
+            echo "version_tag=$VERSION_TAG"
+            echo "changed=$CHANGED"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "::group::Decision"
+          echo "tracked = opcua=$TRACKED_OPCUA, tedge=$TRACKED_TEDGE"
+          echo "target  = opcua=$OPCUA, tedge=$TEDGE"
+          echo "changed = $CHANGED"
+          echo "::endgroup::"
+
+      - name: Open or update the version-bump PR
+        if: steps.decide.outputs.changed == 'true'
+        env:
+          GH_TOKEN:    ${{ secrets.COMMUNITY_ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+          OPCUA:       ${{ steps.decide.outputs.opcua }}
+          TEDGE:       ${{ steps.decide.outputs.tedge }}
+          VERSION_TAG: ${{ steps.decide.outputs.version_tag }}
+        run: |
+          set -e
+          BRANCH="automation/bump-tracked-versions"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Recreate the automation branch from the current main so the PR only
+          # ever carries the version bump, never a stale merge.
+          git checkout -B "$BRANCH"
+          jq -n \
+            --arg opcua "$OPCUA" \
+            --arg tedge "$TEDGE" \
+            '{opcua_version: $opcua, tedge_version: $tedge}' \
+            > tracked-versions.json
+
+          if git diff --quiet -- tracked-versions.json; then
+            echo "tracked-versions.json already up to date; nothing to do."
+            exit 0
+          fi
+
+          git add tracked-versions.json
+          git commit -m "chore: bump tracked versions to opcua=$OPCUA, tedge=$TEDGE"
+          git push --force origin "$BRANCH"
+
+          # Open the PR if none is open yet for this branch.
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump tracked versions to $VERSION_TAG" \
+              --body "$(printf 'Automated upstream version bump.\n\n- OPC-UA gateway: `%s`\n- thin-edge.io: `%s`\n\nThe integration test runs on this PR; once it is green it auto-merges to `main`.' "$OPCUA" "$TEDGE")"
+          fi
+
+          # Turn on auto-merge so the PR lands as soon as the required
+          # integration-test check passes (via the merge queue if enabled).
+          gh pr merge "$BRANCH" --auto --squash
