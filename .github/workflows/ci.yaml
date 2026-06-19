@@ -1,16 +1,21 @@
 name: ci
 
 # Unified pipeline:
-#   1. check-versions    -> probe upstream OPC-UA + thin-edge versions, decide
-#                           which versions to build against and whether to
-#                           publish/release.
-#   2. integration-test  -> build a single-arch CI image, run the end-to-end
-#                           integration test against a Cumulocity tenant, then
-#                           delete the temporary CI tag.
-#   3. publish           -> on success, build & push the multi-arch image to
-#                           ghcr.io (only on main / schedule / dispatch).
-#   4. release           -> create a GitHub release pinning the immutable
-#                           image tag.
+#   1. check-versions   -> probe upstream OPC-UA + thin-edge versions, decide
+#                          which versions to build against and whether upstream
+#                          has drifted past what we currently track.
+#   2. open-version-pr  -> (scheduled runs only, when upstream drifted) open or
+#                          update a PR that bumps tracked-versions.json and turn
+#                          on auto-merge. The PR runs the integration test; once
+#                          it is green the merge queue lands it on main.
+#   3. integration-test -> build a single-arch CI image and run the end-to-end
+#                          integration test against a Cumulocity tenant. This is
+#                          the required check that gates the merge queue. Runs on
+#                          PRs, merge-queue entries, pushes to main and manual
+#                          dispatch (never on the scheduled probe itself).
+#   4. publish          -> DISABLED for now (see TODO below); re-enabled in a
+#                          follow-up PR.
+#   5. release          -> DISABLED for now (depends on publish).
 
 on:
   schedule:
@@ -40,12 +45,15 @@ on:
       - '**/*.md'
       - 'LICENSE'
       - 'docs/**'
+  # Run the required checks on merge-queue entries so the queue can land PRs.
+  merge_group:
 
-# Per-PR concurrency so successive pushes to the same PR cancel in-flight
-# runs; otherwise serialize on a single global key so we never race the
-# Cumulocity tenant or the ghcr.io tags.
+# Per-PR concurrency so successive pushes to the same PR cancel in-flight runs.
+# Everything else (push to main, scheduled probe, manual dispatch) serializes on
+# refs/heads/main, while each merge-queue entry gets its own unique ref and so
+# runs without cancelling its neighbours.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || 'ci-main' }}
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -101,8 +109,8 @@ jobs:
           LATEST_TEDGE: ${{ steps.tedge.outputs.version }}
         run: |
           set -e
-          TRACKED_OPCUA=$(jq -r '.opcua_version' .github/tracked-versions.json)
-          TRACKED_TEDGE=$(jq -r '.tedge_version' .github/tracked-versions.json)
+          TRACKED_OPCUA=$(jq -r '.opcua_version' tracked-versions.json)
+          TRACKED_TEDGE=$(jq -r '.tedge_version' tracked-versions.json)
 
           # Did upstream drift past whatever we last released?
           if [ "$LATEST_OPCUA" != "$TRACKED_OPCUA" ] || [ "$LATEST_TEDGE" != "$TRACKED_TEDGE" ]; then
@@ -113,7 +121,8 @@ jobs:
 
           # Pick the versions THIS run will build/test against.
           #   - workflow_dispatch with overrides wins
-          #   - scheduled runs adopt the latest upstream
+          #   - scheduled runs adopt the latest upstream (so the bump PR they
+          #     open is tested against the new versions)
           #   - everything else uses the currently tracked versions
           OPCUA="$TRACKED_OPCUA"
           TEDGE="$TRACKED_TEDGE"
@@ -124,12 +133,13 @@ jobs:
           [ -n "$INPUT_OPCUA" ] && OPCUA="$INPUT_OPCUA"
           [ -n "$INPUT_TEDGE" ] && TEDGE="$INPUT_TEDGE"
 
-          # When do we publish + release?
+          # When do we publish + release? (Publish is currently disabled, but we
+          # keep computing this so re-enabling it is a one-line change.)
           case "$EVENT" in
-            pull_request)       SHOULD_PUBLISH=false ;;
-            schedule)           SHOULD_PUBLISH=$VERSION_CHANGED ;;
-            push|workflow_dispatch) SHOULD_PUBLISH=true ;;
-            *)                  SHOULD_PUBLISH=false ;;
+            pull_request|merge_group) SHOULD_PUBLISH=false ;;
+            schedule)                 SHOULD_PUBLISH=$VERSION_CHANGED ;;
+            push|workflow_dispatch)   SHOULD_PUBLISH=true ;;
+            *)                        SHOULD_PUBLISH=false ;;
           esac
           if [ "$FORCE" = "true" ]; then
             SHOULD_PUBLISH=true
@@ -156,17 +166,79 @@ jobs:
           echo "should_publish  = $SHOULD_PUBLISH"
           echo "::endgroup::"
 
+  open-version-pr:
+    name: Open version bump PR
+    needs: check-versions
+    # Only the scheduled probe opens bump PRs, and only when upstream drifted.
+    if: github.event_name == 'schedule' && needs.check-versions.outputs.version_changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # COMMUNITY_ACTIONS_PAT (not GITHUB_TOKEN) so the PR this job opens
+          # actually triggers the pull_request workflow — i.e. runs the
+          # integration test. PRs created with GITHUB_TOKEN do not trigger
+          # further workflow runs, which would leave the bump PR untested and
+          # the merge queue with nothing to wait on. Falls back to GITHUB_TOKEN.
+          token: ${{ secrets.COMMUNITY_ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Open or update the version-bump PR
+        env:
+          GH_TOKEN:    ${{ secrets.COMMUNITY_ACTIONS_PAT || secrets.GITHUB_TOKEN }}
+          OPCUA:       ${{ needs.check-versions.outputs.opcua_version }}
+          TEDGE:       ${{ needs.check-versions.outputs.tedge_version }}
+          VERSION_TAG: ${{ needs.check-versions.outputs.version_tag }}
+        run: |
+          set -e
+          BRANCH="automation/bump-tracked-versions"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Recreate the automation branch from the current main so the PR only
+          # ever carries the version bump, never a stale merge.
+          git checkout -B "$BRANCH"
+          jq -n \
+            --arg opcua "$OPCUA" \
+            --arg tedge "$TEDGE" \
+            '{opcua_version: $opcua, tedge_version: $tedge}' \
+            > tracked-versions.json
+
+          if git diff --quiet -- tracked-versions.json; then
+            echo "tracked-versions.json already matches latest upstream; nothing to do."
+            exit 0
+          fi
+
+          git add tracked-versions.json
+          git commit -m "chore: bump tracked versions to opcua=$OPCUA, tedge=$TEDGE"
+          git push --force origin "$BRANCH"
+
+          # Open the PR if none is open yet for this branch.
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: bump tracked versions to $VERSION_TAG" \
+              --body "$(printf 'Automated upstream version bump.\n\n- OPC-UA gateway: `%s`\n- thin-edge.io: `%s`\n\nThe integration test runs on this PR; once it is green the merge queue lands it on `main`.' "$OPCUA" "$TEDGE")"
+          fi
+
+          # Turn on auto-merge so the merge queue picks the PR up as soon as the
+          # required checks pass.
+          gh pr merge "$BRANCH" --auto --squash
+
   integration-test:
     name: Build amd64 image locally + integration test
     needs: check-versions
-    # Skip on PRs from forks (no Cumulocity secrets available there).
-    # Also skip on scheduled runs that did not detect a version change — no
-    # point re-running the same test against the same image every day.
+    # Run on PRs (same-repo only — forks have no Cumulocity secrets), merge-queue
+    # entries, pushes to main and manual dispatch. Never on the scheduled probe:
+    # that run only opens the bump PR, and the test runs on the PR instead.
     if: >-
-      (github.event_name != 'pull_request' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
-      && (github.event_name != 'schedule' ||
-          needs.check-versions.outputs.version_changed == 'true')
+      github.event_name != 'schedule'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
@@ -226,12 +298,15 @@ jobs:
   publish:
     name: Publish multi-arch image to ghcr.io
     needs: [check-versions, integration-test]
-    if: needs.check-versions.outputs.should_publish == 'true'
+    # TODO(publish): re-enable in a follow-up PR. Publishing the multi-arch image
+    # to ghcr.io is intentionally disabled for now. Original condition:
+    #   if: needs.check-versions.outputs.should_publish == 'true'
+    if: false
     runs-on: ubuntu-24.04
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
-      contents: write
+      contents: read
       packages: write
     outputs:
       release_tag: ${{ steps.build.outputs.release_tag }}
@@ -241,10 +316,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
-          fetch-depth: 0
-          # PAT (when configured) so the tracked-versions auto-commit below
-          # is not blocked by branch protection. Falls back to GITHUB_TOKEN.
-          token: ${{ secrets.WORKFLOW_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Compute immutable build suffix + release tag
         id: build
@@ -303,26 +374,12 @@ jobs:
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
           echo "Pinned image ref: ${IMAGE_REF}"
 
-      - name: Update tracked-versions.json (scheduled bumps only)
-        if: github.event_name == 'schedule' && needs.check-versions.outputs.version_changed == 'true'
-        run: |
-          jq -n \
-            --arg opcua "${{ needs.check-versions.outputs.opcua_version }}" \
-            --arg tedge "${{ needs.check-versions.outputs.tedge_version }}" \
-            '{opcua_version: $opcua, tedge_version: $tedge}' \
-            > .github/tracked-versions.json
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/tracked-versions.json
-          # `[skip ci]` prevents this commit from re-triggering the workflow
-          # via the `push: main` trigger.
-          git commit -m "chore: bump tracked versions to opcua=${{ needs.check-versions.outputs.opcua_version }}, tedge=${{ needs.check-versions.outputs.tedge_version }} [skip ci]"
-          git push origin HEAD:main
-
   release:
     name: Create GitHub release
     needs: [check-versions, publish]
-    if: needs.check-versions.outputs.should_publish == 'true'
+    # TODO(release): re-enable alongside publish in a follow-up PR. Original
+    # condition: if: needs.check-versions.outputs.should_publish == 'true'
+    if: false
     runs-on: ubuntu-24.04
     permissions:
       contents: write
