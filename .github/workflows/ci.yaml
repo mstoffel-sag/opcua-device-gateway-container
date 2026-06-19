@@ -33,6 +33,10 @@ on:
         description: 'Publish + release even when no upstream version change was detected'
         type: boolean
         default: false
+      open_bump_pr:
+        description: 'Open/update the version-bump PR (adopts latest upstream, like the scheduled probe)'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths-ignore:
@@ -105,6 +109,7 @@ jobs:
           INPUT_OPCUA:  ${{ inputs.opcua_version }}
           INPUT_TEDGE:  ${{ inputs.tedge_version }}
           FORCE:        ${{ inputs.force_publish }}
+          OPEN_BUMP_PR: ${{ inputs.open_bump_pr }}
           LATEST_OPCUA: ${{ steps.opcua.outputs.version }}
           LATEST_TEDGE: ${{ steps.tedge.outputs.version }}
         run: |
@@ -121,12 +126,14 @@ jobs:
 
           # Pick the versions THIS run will build/test against.
           #   - workflow_dispatch with overrides wins
-          #   - scheduled runs adopt the latest upstream (so the bump PR they
-          #     open is tested against the new versions)
+          #   - scheduled runs (and manual open_bump_pr dispatches) adopt the
+          #     latest upstream so the bump PR they open is tested against the
+          #     new versions
           #   - everything else uses the currently tracked versions
           OPCUA="$TRACKED_OPCUA"
           TEDGE="$TRACKED_TEDGE"
-          if [ "$EVENT" = "schedule" ] && [ "$VERSION_CHANGED" = "true" ]; then
+          if { [ "$EVENT" = "schedule" ] || { [ "$EVENT" = "workflow_dispatch" ] && [ "$OPEN_BUMP_PR" = "true" ]; }; } \
+             && [ "$VERSION_CHANGED" = "true" ]; then
             OPCUA="$LATEST_OPCUA"
             TEDGE="$LATEST_TEDGE"
           fi
@@ -169,8 +176,12 @@ jobs:
   open-version-pr:
     name: Open version bump PR
     needs: check-versions
-    # Only the scheduled probe opens bump PRs, and only when upstream drifted.
-    if: github.event_name == 'schedule' && needs.check-versions.outputs.version_changed == 'true'
+    # The scheduled probe opens bump PRs when upstream drifted; a manual
+    # workflow_dispatch can do the same on demand via the open_bump_pr input.
+    if: >-
+      needs.check-versions.outputs.version_changed == 'true'
+      && (github.event_name == 'schedule'
+          || (github.event_name == 'workflow_dispatch' && inputs.open_bump_pr))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
