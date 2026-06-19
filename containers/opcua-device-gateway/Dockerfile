@@ -3,6 +3,7 @@ FROM debian:12-slim
 ARG BUILDTIME
 ARG REVISION
 ARG VERSION=1023.1.1
+ARG TEDGE_VERSION
 
 LABEL org.opencontainers.image.title="thin-edge.io"
 LABEL org.opencontainers.image.created=$BUILDTIME
@@ -17,6 +18,7 @@ LABEL org.opencontainers.image.url="https://thin-edge.io"
 LABEL org.opencontainers.image.documentation="https://thin-edge.github.io/thin-edge.io/"
 LABEL org.opencontainers.image.base.name="debian:12-slim"
 LABEL com.cumulocity.image.opcua.version="$VERSION"
+LABEL com.thinedge.image.tedge.version="$TEDGE_VERSION"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -31,7 +33,14 @@ RUN apt-get update \
 
 # Only install thin-edge.io to read the tedge config properties (see the entrypoint.sh)
 # TODO: In the future this coupling may be removed
-RUN wget -O - thin-edge.io/install.sh | sh -s
+# Pass an explicit version when TEDGE_VERSION is set; fall back to the
+# latest release otherwise. Always add --minimal to skip the systemd/
+# service plumbing that doesn't apply inside a container.
+RUN if [ -n "${TEDGE_VERSION}" ]; then \
+      wget -O - thin-edge.io/install.sh | sh -s -- "${TEDGE_VERSION}" --minimal; \
+    else \
+      wget -O - thin-edge.io/install.sh | sh -s -- --minimal; \
+    fi
 
 WORKDIR /app
 
