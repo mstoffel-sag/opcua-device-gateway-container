@@ -1,7 +1,7 @@
 set dotenv-load
 
-# Combined version derived from .github/tracked-versions.json: "<opcua>-tedge<tedge>"
-export VERSION := env_var_or_default("VERSION", `jq -r '"\(.opcua_version)-tedge\(.tedge_version | gsub("[~+]"; "-"))"' .github/tracked-versions.json`)
+# Combined version derived from tracked-versions.json: "<opcua>-tedge<tedge>"
+export VERSION := env_var_or_default("VERSION", `jq -r '"\(.opcua_version)-tedge\(.tedge_version | gsub("[~+]"; "-"))"' tracked-versions.json`)
 
 # Generate a version name (that can be used in follow up commands)
 generate_version:
