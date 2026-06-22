@@ -3,17 +3,23 @@ name: publish
 # Build the multi-arch image and push it to ghcr.io on every merge to main
 # (doc-only changes excluded). Versions come from tracked-versions.json.
 #
+# The `release` job then cuts a GitHub release, but ONLY when the version tag
+# `v{opcua}-tedge{tedge}` does not already exist. Every main merge rebuilds the
+# image (so `latest` and the stable tag always carry the latest fix), but a
+# release is a milestone tied to a version bump: a fix-only PR leaves the
+# version tag unchanged, so the release job finds it already present and skips.
+#
 # DISABLED for now: the job is gated `if: false`. main is already known-good
 # (the integration test is a required check on every PR), so re-enabling is just
 # a matter of dropping the `if: false` line.
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'LICENSE'
-      - 'docs/**'
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - '**/*.md'
+  #     - 'LICENSE'
+  #     - 'docs/**'
   workflow_dispatch:
 
 concurrency:
@@ -24,8 +30,11 @@ jobs:
   publish:
     name: Publish multi-arch image to ghcr.io
     # TODO(publish): re-enable by removing this line.
-    if: false
+    # if: false
     runs-on: ubuntu-24.04
+    outputs:
+      version_tag: ${{ steps.build.outputs.version_tag }}
+      digest: ${{ steps.push.outputs.digest }}
     env:
       BUILDX_NO_DEFAULT_ATTESTATIONS: 1
     permissions:
@@ -91,3 +100,60 @@ jobs:
         run: |
           # A tag can be overwritten; a digest cannot — log the immutable ref.
           echo "Pinned image ref: ghcr.io/${{ github.repository_owner }}/opcua-device-gateway@${{ steps.push.outputs.digest }}"
+
+  release:
+    name: Cut GitHub release on version bump
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release if the version tag is new
+        env:
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          VERSION_TAG: ${{ needs.publish.outputs.version_tag }}
+          DIGEST:      ${{ needs.publish.outputs.digest }}
+          IMAGE:       ghcr.io/${{ github.repository_owner }}/opcua-device-gateway
+        run: |
+          set -e
+          TAG="v${VERSION_TAG}"
+
+          # Idempotency gate: a release exists for this version tag only after a
+          # version bump landed it. A fix-only merge keeps the same version tag,
+          # so the release is already there — rebuild the image, skip the release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — non-version change, skipping."
+            exit 0
+          fi
+
+          OPCUA=$(jq -r '.opcua_version' tracked-versions.json)
+          TEDGE=$(jq -r '.tedge_version' tracked-versions.json)
+
+          NOTES=$(cat <<EOF
+          OPC-UA device gateway container.
+
+          - OPC-UA gateway: \`$OPCUA\`
+          - thin-edge.io: \`$TEDGE\`
+
+          ## Pull
+
+          \`\`\`
+          docker pull $IMAGE:$VERSION_TAG
+          \`\`\`
+
+          Immutable, content-addressed ref:
+
+          \`\`\`
+          docker pull $IMAGE@$DIGEST
+          \`\`\`
+          EOF
+          )
+
+          # --target points the new tag at this commit; gh creates the git tag.
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "$TAG" \
+            --notes "$NOTES"
+          echo "Created release $TAG at ${{ github.sha }}"
