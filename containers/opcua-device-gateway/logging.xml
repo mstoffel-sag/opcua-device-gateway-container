@@ -8,15 +8,15 @@
                        <pattern>${FILE_LOG_PATTERN}</pattern>
                </encoder>
 
-               <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-                       <!-- rollover daily -->
+               <!-- rollover daily or at 50MB, and cap the total so a log flood
+                    (e.g. a broken Cumulocity connection) cannot fill the disk -->
+               <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
                        <fileNamePattern>/${user.home}/.opcua/log/device-agent-%d{yyyy-MM-dd}.%i.log
                        </fileNamePattern>
-                       <timeBasedFileNamingAndTriggeringPolicy
-                                       class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
-                               <maxFileSize>50MB</maxFileSize>
-                       </timeBasedFileNamingAndTriggeringPolicy>
-                       <maxHistory>5</maxHistory>
+                       <maxFileSize>50MB</maxFileSize>
+                       <maxHistory>3</maxHistory>
+                       <totalSizeCap>500MB</totalSizeCap>
+                       <cleanHistoryOnStart>true</cleanHistoryOnStart>
                </rollingPolicy>
        </appender>
        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
